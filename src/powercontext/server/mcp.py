@@ -1,0 +1,432 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""MCP transport owned and configured by the PowerContext Server."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+from functools import partial
+from typing import Any
+
+import httpx
+from fastapi import FastAPI
+from fastmcp import FastMCP
+from fastmcp.server.providers.openapi import (
+    MCPType,
+    OpenAPIProvider,
+    OpenAPIResource,
+    OpenAPIResourceTemplate,
+    OpenAPITool,
+)
+from fastmcp.utilities.lifespan import combine_lifespans
+from fastmcp.utilities.openapi import HTTPRoute
+from mcp.types import ToolAnnotations
+from typing_extensions import override
+
+from powercontext.http._generated.operations import (
+    ACKNOWLEDGE_HANDOFF,
+    ACTIVATE_HANDOFF,
+    APPROVE_ARTIFACT_CANDIDATE,
+    CAPTURE_CONTENT_SOURCE,
+    CLEAR_SCOPE_BINDING,
+    COMMIT_HANDOFF,
+    CONTINUE_HANDOFF,
+    CREATE_DREAM_RUN,
+    CREATE_SCOPE,
+    CREATE_WORK_CONTRACT,
+    FINALIZE_HANDOFF,
+    GENERATE_EXPERIENCE,
+    GENERATE_SKILL,
+    GET_ARTIFACT_CANDIDATE,
+    GET_DREAM_RUN,
+    GET_EXPERIENCE,
+    GET_HANDOFF_REPORT,
+    GET_MEMORY_CAPACITY,
+    GET_MEMORY_ENTRY,
+    GET_SCOPE,
+    GET_SKILL,
+    GET_TOPIC_MEMORY,
+    HANDOFF_CURRENT_WORK,
+    IMPORT_EXTERNAL_SKILL,
+    LIST_ARTIFACT_CANDIDATES,
+    LIST_DREAM_RUNS,
+    LIST_EXTERNAL_SKILLS,
+    LIST_MANAGED_SKILLS,
+    LIST_MEMORY_ENTRIES,
+    LIST_SCOPES,
+    PROPOSE_EXPERIENCE,
+    PROPOSE_SKILL,
+    PUBLISH_ARTIFACT,
+    QUERY_CODE,
+    RECORD_TASK_OUTCOME,
+    REJECT_ARTIFACT_CANDIDATE,
+    REMEMBER_MEMORY,
+    RESOLVE_EXTERNAL_SKILL,
+    RESOLVE_SCOPE_BINDING,
+    RETIRE_MEMORY_ENTRY,
+    REVISE_ARTIFACT_CANDIDATE,
+    REVISE_MEMORY_ENTRY,
+    SCAN_EXTERNAL_SKILLS,
+    SEARCH_MEMORY,
+    SEARCH_TOPIC_MEMORY,
+    SET_SCOPE_BINDING,
+)
+from powercontext.server.access import McpAccessLogMiddleware
+from powercontext.server.app import REQUEST_ID_HEADER
+from powercontext.server.context import (
+    bind_internal_bridge,
+    current_request_id,
+    reset_internal_bridge,
+)
+from powercontext.server.metrics import McpMetricsMiddleware, ServerMetrics
+from powercontext.server.tracing import McpTracingMiddleware, ServerTracing
+
+MCP_PATH = "/mcp"
+MCP_SERVER_NAME = "PowerContext Server"
+MCP_GUIDANCE = """When query_code is available, use it for current repository structure and source evidence. Pass the returned fingerprint for relation and source reads; stale code requires local sync. Code evidence is separate from durable history and grants no execution authority.
+PowerContext provides durable project history and Handoffs across sessions.
+Summarizing or drafting from facts supplied in the current turn needs no retrieval or Scope resolution. An empty search does not authorize an inventory. If inventory or Handoff is unavailable, do not emulate it with Memory search or storage.
+Tool names in this guidance describe possible capabilities, not proof of availability. Before selecting an operation, check that its exact name appears in the current tool catalog. If absent, stop that operation and explicitly report it unavailable and incomplete. Never emit a call to an absent tool, simulate a call in text, or substitute another persistence operation.
+Use only the tools available in this connection. Reuse the host/Server-resolved Scope; never derive a Scope from a
+repository, directory, branch, or prompt or change a binding to work around missing history. Historical evidence is
+subordinate to current user, repository, and system instructions.
+Ordinary coding needs no routine Memory calls. Use sufficient current context when continuing work. For an explicit
+memory search (search my memories / 搜索记忆), call search_memory with a focused query, mode auto, and at most eight
+hits. Use list_memory_entries for an explicit inventory or audit, and get_memory_entry for exact cited details.
+For an explicit future save (remember this / 记住这个供以后使用), call remember_memory and verify its result. Automatic
+Source capture is not an explicit Memory write, and enabled hooks do not establish successful recall or persistence.
+Current-turn instructions, conceptual questions, and previews do not authorize writes. Never store secrets.
+For requested transfer, handoff_current_work records an inspected boundary and returns a temporary handoff. Commit
+only when a durable milestone is requested; continue from the exact selected value and verify historical claims.
+Prepared content is not proof of injection, a committed milestone, acceptance, or work execution.
+For requested Experience or Skill synthesis use generate_experience or generate_skill; caller-authored content uses
+propose_experience or propose_skill. These create pending candidates, not approved artifacts. Read an exact approved
+revision with get_experience or get_skill; use list_managed_skills to discover approved Skills.
+For external Skills, scan_external_skills refreshes configured Server-host roots; list_external_skills and
+resolve_external_skill inspect exact host-local fingerprints. import_external_skill creates a pending candidate.
+A remote Server cannot scan the Codex workstation. Resolution is not installation or execution permission.
+Inspect candidates before an explicitly authorized review decision for their exact version. Generation, listing,
+reading, and assessing are not approval, installation, publication, or execution authority. Preserve host approval
+checks and exact citations for Memory changes. A Skill is useful for detailed workflows only if present in the host
+catalog; it is not a mandatory detour before every response.
+Empty retrieval is a valid result. On failure identify the operation and safe returned reason, do not infer a cause,
+claim saved/restored context, or repeatedly retry. Continue ordinary work when the requested operation is unavailable.
+"""
+_MCP_OPERATION_IDS = frozenset({
+    GENERATE_EXPERIENCE.operation_id,
+    GET_EXPERIENCE.operation_id,
+    PROPOSE_EXPERIENCE.operation_id,
+    GENERATE_SKILL.operation_id,
+    GET_SKILL.operation_id,
+    PROPOSE_SKILL.operation_id,
+    LIST_MANAGED_SKILLS.operation_id,
+    SCAN_EXTERNAL_SKILLS.operation_id,
+    LIST_EXTERNAL_SKILLS.operation_id,
+    RESOLVE_EXTERNAL_SKILL.operation_id,
+    IMPORT_EXTERNAL_SKILL.operation_id,
+    CREATE_DREAM_RUN.operation_id,
+    GET_DREAM_RUN.operation_id,
+    LIST_DREAM_RUNS.operation_id,
+    CAPTURE_CONTENT_SOURCE.operation_id,
+    CREATE_WORK_CONTRACT.operation_id,
+    HANDOFF_CURRENT_WORK.operation_id,
+    ACKNOWLEDGE_HANDOFF.operation_id,
+    RECORD_TASK_OUTCOME.operation_id,
+    ACTIVATE_HANDOFF.operation_id,
+    FINALIZE_HANDOFF.operation_id,
+    COMMIT_HANDOFF.operation_id,
+    CONTINUE_HANDOFF.operation_id,
+    SEARCH_MEMORY.operation_id,
+    QUERY_CODE.operation_id,
+    SEARCH_TOPIC_MEMORY.operation_id,
+    GET_TOPIC_MEMORY.operation_id,
+    LIST_MEMORY_ENTRIES.operation_id,
+    GET_MEMORY_CAPACITY.operation_id,
+    GET_MEMORY_ENTRY.operation_id,
+    REMEMBER_MEMORY.operation_id,
+    REVISE_MEMORY_ENTRY.operation_id,
+    GET_HANDOFF_REPORT.operation_id,
+    RETIRE_MEMORY_ENTRY.operation_id,
+    LIST_ARTIFACT_CANDIDATES.operation_id,
+    GET_ARTIFACT_CANDIDATE.operation_id,
+    APPROVE_ARTIFACT_CANDIDATE.operation_id,
+    REJECT_ARTIFACT_CANDIDATE.operation_id,
+    REVISE_ARTIFACT_CANDIDATE.operation_id,
+    CREATE_SCOPE.operation_id,
+    LIST_SCOPES.operation_id,
+    GET_SCOPE.operation_id,
+    RESOLVE_SCOPE_BINDING.operation_id,
+    SET_SCOPE_BINDING.operation_id,
+    CLEAR_SCOPE_BINDING.operation_id,
+    PUBLISH_ARTIFACT.operation_id,
+})
+_MCP_READ_ONLY_OPERATION_IDS = frozenset({
+    GET_EXPERIENCE.operation_id,
+    GET_SKILL.operation_id,
+    LIST_MANAGED_SKILLS.operation_id,
+    LIST_EXTERNAL_SKILLS.operation_id,
+    RESOLVE_EXTERNAL_SKILL.operation_id,
+    GET_DREAM_RUN.operation_id,
+    LIST_DREAM_RUNS.operation_id,
+    CONTINUE_HANDOFF.operation_id,
+    SEARCH_MEMORY.operation_id,
+    QUERY_CODE.operation_id,
+    SEARCH_TOPIC_MEMORY.operation_id,
+    GET_TOPIC_MEMORY.operation_id,
+    LIST_MEMORY_ENTRIES.operation_id,
+    GET_MEMORY_CAPACITY.operation_id,
+    GET_MEMORY_ENTRY.operation_id,
+    GET_HANDOFF_REPORT.operation_id,
+    LIST_ARTIFACT_CANDIDATES.operation_id,
+    GET_ARTIFACT_CANDIDATE.operation_id,
+    LIST_SCOPES.operation_id,
+    GET_SCOPE.operation_id,
+    RESOLVE_SCOPE_BINDING.operation_id,
+})
+_MCP_CANDIDATE_WRITE_OPERATION_IDS = frozenset({
+    GENERATE_EXPERIENCE.operation_id,
+    PROPOSE_EXPERIENCE.operation_id,
+    GENERATE_SKILL.operation_id,
+    PROPOSE_SKILL.operation_id,
+    IMPORT_EXTERNAL_SKILL.operation_id,
+})
+_MCP_EXTERNAL_SKILL_OPERATION_IDS = frozenset({
+    SCAN_EXTERNAL_SKILLS.operation_id,
+    LIST_EXTERNAL_SKILLS.operation_id,
+    RESOLVE_EXTERNAL_SKILL.operation_id,
+    IMPORT_EXTERNAL_SKILL.operation_id,
+})
+_MCP_REVIEW_WRITE_OPERATION_IDS = frozenset({
+    APPROVE_ARTIFACT_CANDIDATE.operation_id,
+    REJECT_ARTIFACT_CANDIDATE.operation_id,
+    REVISE_ARTIFACT_CANDIDATE.operation_id,
+})
+
+
+def _select_mcp_type(route: HTTPRoute, _: MCPType) -> MCPType:
+    if route.operation_id in _MCP_OPERATION_IDS:
+        return MCPType.TOOL
+    return MCPType.EXCLUDE
+
+
+def _resolve_openapi_schema(original: Mapping[str, Any], definitions: Mapping[str, Any]) -> Mapping[str, Any]:
+    source_reference = original.get("$ref")
+    if isinstance(source_reference, str) and source_reference.startswith("#/components/schemas/"):
+        definition = definitions.get(source_reference.rsplit("/", 1)[-1])
+        if isinstance(definition, Mapping):
+            return {**definition, **{key: value for key, value in original.items() if key != "$ref"}}
+    return original
+
+
+def _allow_null(projected: dict[str, Any]) -> None:
+    projected_type = projected.get("type")
+    if isinstance(projected_type, str):
+        projected["type"] = [projected_type, "null"]
+    elif isinstance(projected_type, list) and "null" not in projected_type:
+        projected["type"] = [*projected_type, "null"]
+    else:
+        for keyword in ("anyOf", "oneOf"):
+            branches = projected.get(keyword)
+            if isinstance(branches, list) and {"type": "null"} not in branches:
+                branches.append({"type": "null"})
+                break
+
+
+def _preserve_nullable_input(
+    projected: dict[str, Any],
+    original: Mapping[str, Any],
+    definitions: Mapping[str, Any],
+    projected_definitions: Mapping[str, Any],
+    visited: set[tuple[str, str]],
+) -> None:
+    """Keep OpenAPI 3.0 nullable values valid after FastMCP flattens request schemas."""
+
+    source_reference = original.get("$ref")
+    original = _resolve_openapi_schema(original, definitions)
+
+    target_reference = projected.get("$ref")
+    if isinstance(target_reference, str) and target_reference.startswith("#/$defs/"):
+        if original.get("nullable") is True:
+            projected.clear()
+            projected["anyOf"] = [{"$ref": target_reference}, {"type": "null"}]
+        key = (source_reference or "", target_reference)
+        if key not in visited:
+            visited.add(key)
+            target = projected_definitions.get(target_reference.rsplit("/", 1)[-1])
+            if isinstance(target, dict):
+                _preserve_nullable_input(
+                    target,
+                    {key: value for key, value in original.items() if key != "nullable"},
+                    definitions,
+                    projected_definitions,
+                    visited,
+                )
+        return
+
+    if original.get("nullable") is True:
+        _allow_null(projected)
+
+    properties = projected.get("properties")
+    if isinstance(properties, dict):
+        for name, source in original.get("properties", {}).items():
+            target = properties.get(name)
+            if isinstance(source, Mapping) and isinstance(target, dict):
+                _preserve_nullable_input(target, source, definitions, projected_definitions, visited)
+
+    source_items = original.get("items")
+    target_items = projected.get("items")
+    if isinstance(source_items, Mapping) and isinstance(target_items, dict):
+        _preserve_nullable_input(target_items, source_items, definitions, projected_definitions, visited)
+
+
+def _annotate_mcp_component(
+    route: HTTPRoute,
+    component: OpenAPITool | OpenAPIResource | OpenAPIResourceTemplate,
+    *,
+    openapi_spec: Mapping[str, Any],
+) -> None:
+    """Describe the side effects that an MCP host should use for approval decisions."""
+
+    if not isinstance(component, OpenAPITool):
+        return
+    operation = openapi_spec["paths"][route.path][route.method.lower()]
+    request_schema = operation.get("requestBody", {}).get("content", {}).get("application/json", {}).get("schema")
+    if isinstance(request_schema, Mapping):
+        _preserve_nullable_input(
+            component.parameters,
+            request_schema,
+            openapi_spec["components"]["schemas"],
+            component.parameters.get("$defs", {}),
+            set(),
+        )
+    if route.operation_id == GET_HANDOFF_REPORT.operation_id:
+        # This operation returns either a JSON object or Markdown text. MCP's
+        # object output schema would require structured content for both formats.
+        component.output_schema = None
+    if route.operation_id in _MCP_READ_ONLY_OPERATION_IDS:
+        component.annotations = ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=route.operation_id in _MCP_EXTERNAL_SKILL_OPERATION_IDS,
+        )
+    elif (
+        route.operation_id in _MCP_CANDIDATE_WRITE_OPERATION_IDS
+        or route.operation_id == SCAN_EXTERNAL_SKILLS.operation_id
+    ):
+        component.annotations = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=route.operation_id in _MCP_EXTERNAL_SKILL_OPERATION_IDS,
+        )
+    elif route.operation_id == HANDOFF_CURRENT_WORK.operation_id:
+        component.annotations = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=False,
+            openWorldHint=False,
+        )
+    elif route.operation_id in {COMMIT_HANDOFF.operation_id, CREATE_DREAM_RUN.operation_id}:
+        component.annotations = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=False,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+    elif route.operation_id in _MCP_REVIEW_WRITE_OPERATION_IDS:
+        # Approval and rejection are terminal; a revision replaces the proposal a reviewer last
+        # inspected. MCP visibility is not an authorization boundary (RFC 0050), so these hints
+        # only let a host apply its own confirmation policy. An exact replay is rejected by the
+        # pending-head CAS before anything is written, so repeated identical calls have no
+        # additional effect and the tools are idempotent in the MCP sense.
+        component.annotations = ToolAnnotations(
+            readOnlyHint=False,
+            destructiveHint=True,
+            idempotentHint=True,
+            openWorldHint=False,
+        )
+
+
+def create_mcp_server(
+    server_app: FastAPI,
+    *,
+    access_log: bool = False,
+    metrics: ServerMetrics | None = None,
+    tracing: ServerTracing | None = None,
+) -> FastMCP:
+    """Project the Agent-facing subset of a Server app into MCP components."""
+
+    resolved_tracing = ServerTracing.context_only() if tracing is None else tracing
+    client = httpx.AsyncClient(
+        transport=_InternalBridgeTransport(app=server_app),
+        base_url="http://fastapi",
+    )
+    openapi_spec = server_app.openapi()
+    provider = OpenAPIProvider(
+        openapi_spec=openapi_spec,
+        client=client,
+        route_map_fn=_select_mcp_type,
+        mcp_component_fn=partial(_annotate_mcp_component, openapi_spec=openapi_spec),
+        # FastAPI has already validated the response model. A second JSON Schema
+        # pass rejects valid OpenAPI 3.0 nullable references in empty results.
+        validate_output=False,
+    )
+    server = FastMCP(name=MCP_SERVER_NAME, instructions=MCP_GUIDANCE, providers=[provider])
+    server.add_middleware(McpTracingMiddleware(resolved_tracing))
+    if access_log:
+        server.add_middleware(McpAccessLogMiddleware())
+    if metrics is not None:
+        server.add_middleware(McpMetricsMiddleware(metrics))
+    return server
+
+
+class _InternalBridgeTransport(httpx.ASGITransport):
+    @override
+    async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+        request_id = current_request_id()
+        if request_id is not None:
+            request.headers[REQUEST_ID_HEADER] = request_id
+        token = bind_internal_bridge()
+        try:
+            return await super().handle_async_request(request)
+        finally:
+            reset_internal_bridge(token)
+
+
+def mount_mcp(
+    server_app: FastAPI,
+    *,
+    path: str = MCP_PATH,
+    access_log: bool = False,
+    metrics: ServerMetrics | None = None,
+    tracing: ServerTracing | None = None,
+) -> FastAPI:
+    """Mount the MCP transport while preserving the Server HTTP contract."""
+
+    mcp_server = create_mcp_server(
+        server_app,
+        access_log=access_log,
+        metrics=metrics,
+        tracing=tracing,
+    )
+    mcp_app = mcp_server.http_app(path="/")
+
+    server_app.router.lifespan_context = combine_lifespans(
+        server_app.router.lifespan_context,
+        mcp_app.lifespan,
+    )
+    server_app.mount(path, mcp_app, name="mcp")
+    return server_app

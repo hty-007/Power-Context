@@ -1,0 +1,13 @@
+{
+  "title": "Documentation",
+  "pages": [
+    "get-started",
+    "integrations",
+    "workflows",
+    "operate",
+    "develop",
+    "---API Reference---",
+    "[HTTP API](/api)",
+    "[Python API](/en/modules)"
+  ]
+}

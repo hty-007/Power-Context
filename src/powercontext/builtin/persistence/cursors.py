@@ -1,0 +1,213 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Source-window cursor persistence."""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+from pydantic import BaseModel
+from sqlalchemy import select, update
+from sqlalchemy.dialects.mysql import insert as mysql_insert
+from sqlalchemy.dialects.sqlite import insert as sqlite_insert
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from powercontext.builtin.persistence.codec import dump_model, load_model, stored_bytes
+from powercontext.builtin.persistence.database import SELECTION_BATCH_SIZE
+from powercontext.builtin.persistence.errors import (
+    GenerationConflictError,
+    InvalidRepositoryArgumentError,
+)
+from powercontext.builtin.persistence.tables import SOURCE_CURSORS_TABLE
+from powercontext.builtin.sources import SourceCursor
+from powercontext.limits import MAX_BINDING_NAME_LENGTH, MAX_SCOPE_ID_LENGTH
+
+
+class StoredSourceCursor(BaseModel):
+    """A decoded Source cursor at one compare-and-swap generation."""
+
+    scope_id: str
+    binding_name: str
+    cursor: SourceCursor
+    generation: int
+
+
+class SourceCursorRepository:
+    """Persist source-window cursors with generation CAS."""
+
+    async def load(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        binding_name: str,
+        /,
+        *,
+        for_update: bool = False,
+    ) -> StoredSourceCursor | None:
+        _require_identifier("scope_id", scope_id, MAX_SCOPE_ID_LENGTH)
+        _require_identifier("binding_name", binding_name, MAX_BINDING_NAME_LENGTH)
+        statement = select(SOURCE_CURSORS_TABLE).where(
+            SOURCE_CURSORS_TABLE.c.scope_id == scope_id,
+            SOURCE_CURSORS_TABLE.c.binding_name == binding_name,
+        )
+        if for_update:
+            statement = statement.with_for_update()
+        row = (await connection.execute(statement)).mappings().one_or_none()
+        return None if row is None else _decode_row(row)
+
+    async def load_many(
+        self,
+        connection: AsyncConnection,
+        scope_ids: Sequence[str],
+        binding_name: str,
+        /,
+    ) -> dict[str, StoredSourceCursor]:
+        """Return the cursors that exist for one binding across a Scope selection."""
+
+        _require_identifier("binding_name", binding_name, MAX_BINDING_NAME_LENGTH)
+        scopes: dict[str, None] = {}
+        for scope_id in scope_ids:
+            _require_identifier("scope_id", scope_id, MAX_SCOPE_ID_LENGTH)
+            scopes.setdefault(scope_id, None)
+        ordered = tuple(scopes)
+        loaded: dict[str, StoredSourceCursor] = {}
+        for start in range(0, len(ordered), SELECTION_BATCH_SIZE):
+            batch = ordered[start : start + SELECTION_BATCH_SIZE]
+            rows = (
+                await connection.execute(
+                    select(SOURCE_CURSORS_TABLE).where(
+                        SOURCE_CURSORS_TABLE.c.scope_id.in_(batch),
+                        SOURCE_CURSORS_TABLE.c.binding_name == binding_name,
+                    )
+                )
+            ).mappings()
+            for row in rows:
+                loaded[str(row["scope_id"])] = _decode_row(row)
+        return loaded
+
+    async def save(
+        self,
+        connection: AsyncConnection,
+        scope_id: str,
+        binding_name: str,
+        cursor: SourceCursor,
+        /,
+        *,
+        expected_generation: int | None,
+    ) -> StoredSourceCursor:
+        _require_identifier("scope_id", scope_id, MAX_SCOPE_ID_LENGTH)
+        _require_identifier("binding_name", binding_name, MAX_BINDING_NAME_LENGTH)
+        if expected_generation is not None and expected_generation < 1:
+            raise InvalidRepositoryArgumentError("expected_generation", "must be positive")
+        payload = dump_model(cursor, kind="source-cursor", name=binding_name)
+        if expected_generation is None:
+            existing = await self.load(connection, scope_id, binding_name)
+            if existing is not None:
+                raise GenerationConflictError(binding_name, None, existing.generation)
+            generation = 1
+            created = await _insert_if_absent(
+                connection,
+                scope_id=scope_id,
+                binding_name=binding_name,
+                cursor=payload,
+                generation=generation,
+            )
+            if not created:
+                # Another runtime may have inserted the same cursor after our
+                # initial read. Normalize that database race to the same CAS
+                # conflict used for concurrent updates.
+                existing = await self.load(
+                    connection,
+                    scope_id,
+                    binding_name,
+                    for_update=True,
+                )
+                if existing is None:
+                    raise GenerationConflictError(binding_name, None, None)
+                raise GenerationConflictError(binding_name, None, existing.generation) from None
+        else:
+            generation = expected_generation + 1
+            result = await connection.execute(
+                update(SOURCE_CURSORS_TABLE)
+                .where(
+                    SOURCE_CURSORS_TABLE.c.scope_id == scope_id,
+                    SOURCE_CURSORS_TABLE.c.binding_name == binding_name,
+                    SOURCE_CURSORS_TABLE.c.generation == expected_generation,
+                )
+                .values(cursor=payload, generation=generation)
+            )
+            if result.rowcount != 1:
+                actual = await self.load(connection, scope_id, binding_name)
+                raise GenerationConflictError(
+                    binding_name,
+                    expected_generation,
+                    None if actual is None else actual.generation,
+                )
+        return StoredSourceCursor(
+            scope_id=scope_id,
+            binding_name=binding_name,
+            cursor=cursor,
+            generation=generation,
+        )
+
+
+async def _insert_if_absent(
+    connection: AsyncConnection,
+    *,
+    scope_id: str,
+    binding_name: str,
+    cursor: bytes,
+    generation: int,
+) -> bool:
+    values = {
+        "scope_id": scope_id,
+        "binding_name": binding_name,
+        "cursor": cursor,
+        "generation": generation,
+    }
+    if connection.dialect.name == "sqlite":
+        statement = sqlite_insert(SOURCE_CURSORS_TABLE).values(**values).on_conflict_do_nothing()
+    elif connection.dialect.name == "mysql":
+        # OceanBase MySQL mode accepts SAVEPOINT but does not retain it for
+        # RELEASE/ROLLBACK. INSERT IGNORE keeps first creation atomic without
+        # relying on a nested transaction; all values are validated first, so
+        # the only ignored error is the table's cursor identity conflict.
+        statement = mysql_insert(SOURCE_CURSORS_TABLE).values(**values).prefix_with("IGNORE")
+    else:
+        raise InvalidRepositoryArgumentError("dialect", f"{connection.dialect.name!r} does not support source cursors")
+    result = await connection.execute(statement)
+    return result.rowcount == 1
+
+
+def _decode_row(row: Mapping[Any, Any]) -> StoredSourceCursor:
+    return StoredSourceCursor(
+        scope_id=str(row["scope_id"]),
+        binding_name=str(row["binding_name"]),
+        cursor=load_model(
+            SourceCursor,
+            stored_bytes(row["cursor"], column="cursor"),
+            kind="source-cursor",
+            name=str(row["binding_name"]),
+        ),
+        generation=int(row["generation"]),
+    )
+
+
+def _require_identifier(field: str, value: object, maximum: int) -> None:
+    if not isinstance(value, str) or not value.strip() or value != value.strip():
+        raise InvalidRepositoryArgumentError(field, "must be a non-empty trimmed string")
+    if len(value) > maximum:
+        raise InvalidRepositoryArgumentError(field, f"must not exceed {maximum} characters")

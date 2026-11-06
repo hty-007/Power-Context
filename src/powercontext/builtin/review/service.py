@@ -1,0 +1,708 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Transactional Artifact Candidate and Review orchestration."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator, Callable
+from contextlib import AbstractAsyncContextManager, asynccontextmanager, nullcontext
+from typing import Any, TypeAlias, cast
+
+from pydantic import ValidationError
+from sqlalchemy.ext.asyncio import AsyncConnection
+
+from powercontext.artifacts import Artifact, ArtifactRef, MemoryCitation
+from powercontext.builtin.artifacts.experience import Experience, ExperienceContent, ExperienceDraft
+from powercontext.builtin.artifacts.experience.recurrence import (
+    failure_item_text,
+    failure_refs,
+    normalize_match_text,
+)
+from powercontext.builtin.artifacts.handoff.models import (
+    HandoffArtifactCitation,
+    HandoffMemoryCitation,
+    HandoffSourceCitation,
+)
+from powercontext.builtin.artifacts.profile.models import ProfileCandidateProposal, ProfileWriteContent
+from powercontext.builtin.artifacts.profile.review import decide_profile, revise_profile
+from powercontext.builtin.artifacts.skill import Skill, SkillContent, SkillDraft, build_instruction_skill_package
+from powercontext.builtin.evidence.models import EvidenceResolutionError, unique_references
+from powercontext.builtin.evidence.resolver import AuthorizationContext, EvidenceAuthorizer, EvidenceResolver
+from powercontext.builtin.persistence.artifacts import ArtifactRepository
+from powercontext.builtin.persistence.candidates import CandidateRepository
+from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.errors import RepositoryNotFoundError
+from powercontext.builtin.persistence.experience_index import ExperienceIndex
+from powercontext.builtin.persistence.generation_sources import GenerationSourceAccess
+from powercontext.builtin.persistence.skill_packages import SkillPackageRepository
+from powercontext.builtin.persistence.sources import StoredSource
+from powercontext.builtin.review.errors import (
+    ArtifactTargetConflictError,
+    CandidateConflictError,
+    InvalidCandidateError,
+)
+from powercontext.builtin.review.models import (
+    MAX_CANDIDATE_EVIDENCE,
+    MAX_CANDIDATE_REASON_LENGTH,
+    ArtifactCandidate,
+    ArtifactCandidatePage,
+    CandidateEvidenceView,
+    CandidateStatus,
+)
+from powercontext.builtin.sources.content import ContentSource
+from powercontext.builtin.work.models import TaskOutcome
+from powercontext.errors import ArtifactNotFoundError, RevisionConflictError
+from powercontext.sources import SourceRef
+
+IdFactory = Callable[[str], str]
+ReviewedProposal: TypeAlias = ExperienceContent | SkillContent | ProfileCandidateProposal
+ReviewedArtifact: TypeAlias = Experience | Skill
+ReviewedDraft: TypeAlias = ExperienceDraft | SkillDraft
+ReviewedCandidate: TypeAlias = ArtifactCandidate[ReviewedProposal]
+
+
+class ReviewService:
+    """Keep Candidate CAS and Artifact CAS inside one database transaction."""
+
+    def __init__(
+        self,
+        *,
+        database: AsyncDatabase,
+        scope_id: str,
+        candidates: CandidateRepository,
+        artifacts: ArtifactRepository,
+        experience_index: ExperienceIndex,
+        skill_packages: SkillPackageRepository,
+        sources: GenerationSourceAccess,
+        id_factory: IdFactory,
+        evidence: EvidenceResolver | None = None,
+        authorization_context: Callable[[], AbstractAsyncContextManager[None]] = nullcontext,
+        connection: AsyncConnection | None = None,
+    ) -> None:
+        self._database = database
+        self._scope_id = scope_id
+        self._candidates = candidates
+        self._artifacts = artifacts
+        self._experience_index = experience_index
+        self._skill_packages = skill_packages
+        self._sources = sources
+        self._id_factory = id_factory
+        self._evidence = evidence
+        self._authorization_context = authorization_context
+        self._bound_connection = connection
+
+    def configure_authorization(self, authorize: EvidenceAuthorizer, context: AuthorizationContext) -> None:
+        if self._evidence is None:
+            raise InvalidCandidateError("evidence", "Memory evidence resolution is unavailable")
+        self._evidence.authorize = authorize
+        self._authorization_context = context
+
+    @asynccontextmanager
+    async def _connection(self) -> AsyncIterator[AsyncConnection]:
+        async with self._authorization_context(), self._database.connection(self._bound_connection) as connection:
+            yield connection
+
+    async def propose_experience(
+        self,
+        proposal: ExperienceContent,
+        /,
+        *,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        target: ArtifactRef | None,
+        reason: str | None,
+        candidate_id: str | None = None,
+        memory_citations: tuple[MemoryCitation, ...] = (),
+    ) -> ArtifactCandidate[ExperienceContent]:
+        """Persist a human or integration supplied Experience proposal."""
+
+        candidate = await self._propose(
+            Experience.family,
+            proposal,
+            sources=sources,
+            artifacts=artifacts,
+            target=target,
+            reason=reason,
+            candidate_id=candidate_id,
+            memory_citations=memory_citations,
+        )
+        return _experience_candidate(candidate)
+
+    async def propose_skill(
+        self,
+        proposal: SkillContent,
+        /,
+        *,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        target: ArtifactRef | None,
+        reason: str | None,
+        candidate_id: str | None = None,
+    ) -> ArtifactCandidate[SkillContent]:
+        """Persist a human or integration supplied managed Skill proposal."""
+
+        canonical_sources = _unique_sources(sources)
+        canonical_artifacts = _unique_artifacts(artifacts)
+        _validate_reason(reason)
+        async with self._connection() as connection:
+            proposal = await self._canonical_skill_proposal(connection, proposal)
+            candidate = await self._propose_with_connection(
+                connection,
+                Skill.family,
+                proposal,
+                sources=canonical_sources,
+                artifacts=canonical_artifacts,
+                target=target,
+                reason=reason,
+                candidate_id=candidate_id,
+            )
+        return _skill_candidate(candidate)
+
+    async def _propose(
+        self,
+        family: str,
+        proposal: ReviewedProposal,
+        /,
+        *,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        target: ArtifactRef | None,
+        reason: str | None,
+        candidate_id: str | None = None,
+        memory_citations: tuple[MemoryCitation, ...] = (),
+    ) -> ReviewedCandidate:
+        canonical_sources = _unique_sources(sources)
+        canonical_artifacts = _unique_artifacts(artifacts)
+        _validate_reason(reason)
+        async with self._connection() as connection:
+            candidate = await self._propose_with_connection(
+                connection,
+                family,
+                proposal,
+                sources=canonical_sources,
+                artifacts=canonical_artifacts,
+                target=target,
+                reason=reason,
+                candidate_id=candidate_id,
+                memory_citations=unique_references(memory_citations),
+            )
+        return _reviewed_candidate(candidate)
+
+    async def _propose_with_connection(
+        self,
+        connection: AsyncConnection,
+        family: str,
+        proposal: ReviewedProposal,
+        /,
+        *,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        target: ArtifactRef | None,
+        reason: str | None,
+        candidate_id: str | None = None,
+        memory_citations: tuple[MemoryCitation, ...] = (),
+    ) -> ReviewedCandidate:
+        sources = await self._validate_evidence(connection, sources, artifacts, memory_citations, proposal=proposal)
+        await self._validate_target(connection, family, target, artifacts)
+        candidate = await self._candidates.create(
+            connection,
+            self._scope_id,
+            candidate_id or self._id_factory("candidate"),
+            family,
+            proposal,
+            sources=sources,
+            artifacts=artifacts,
+            target=target,
+            reason=reason,
+            memory_citations=memory_citations,
+        )
+        return _reviewed_candidate(candidate)
+
+    async def get_candidate(self, candidate_id: str, /) -> ReviewedCandidate:
+        async with self._connection() as connection:
+            candidate = await self._candidates.get(connection, self._scope_id, candidate_id)
+        return _reviewed_candidate(candidate)
+
+    async def inspect_evidence(self, candidate_id: str, expected_version: int) -> CandidateEvidenceView:
+        async with self._connection() as connection:
+            candidate = await self._candidates.get(connection, self._scope_id, candidate_id)
+            if candidate.version != expected_version:
+                raise CandidateConflictError(candidate_id, expected_version, candidate.version)
+            if self._evidence is None:
+                return CandidateEvidenceView(
+                    candidate_id=candidate_id,
+                    version=candidate.version,
+                    unavailable="capability_unavailable",
+                )
+            try:
+                resolved = await self._evidence.resolve(
+                    connection,
+                    sources=candidate.sources,
+                    artifacts=candidate.artifacts,
+                    memory_citations=candidate.memory_citations,
+                )
+            except EvidenceResolutionError as error:
+                return CandidateEvidenceView(
+                    candidate_id=candidate_id, version=candidate.version, unavailable=error.code
+                )
+            return CandidateEvidenceView(candidate_id=candidate_id, version=candidate.version, resolved=resolved)
+
+    async def list_candidates(
+        self,
+        /,
+        *,
+        status: CandidateStatus,
+        family: str | None,
+        cursor: str | None,
+        limit: int,
+    ) -> ArtifactCandidatePage[ReviewedProposal]:
+        async with self._connection() as connection:
+            page = await self._candidates.list(
+                connection,
+                self._scope_id,
+                status=status,
+                family=family,
+                cursor=cursor,
+                limit=limit,
+            )
+        return ArtifactCandidatePage(
+            candidates=tuple(_reviewed_candidate(candidate) for candidate in page.candidates),
+            next_cursor=page.next_cursor,
+        )
+
+    async def revise(
+        self,
+        candidate_id: str,
+        expected_version: int,
+        proposal: ReviewedProposal | ProfileWriteContent,
+        /,
+        *,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        target: ArtifactRef | None,
+        reason: str | None,
+        memory_citations: tuple[MemoryCitation, ...] | None = None,
+    ) -> ReviewedCandidate:
+        canonical_sources = _unique_sources(sources)
+        canonical_artifacts = _unique_artifacts(artifacts)
+        _validate_reason(reason)
+        async with self._connection() as connection:
+            current = await self._candidates.lock_pending(
+                connection,
+                self._scope_id,
+                candidate_id,
+                expected_version,
+            )
+            reviewed = _reviewed_candidate(current)
+            if reviewed.family == "profile":
+                proposal = revise_profile(current, proposal, canonical_sources, canonical_artifacts, target)
+            _validate_proposal_family(reviewed.family, proposal)
+            if isinstance(proposal, SkillContent):
+                proposal = await self._canonical_skill_proposal(connection, proposal)
+            if target != current.target:
+                raise InvalidCandidateError("target", "cannot change across Candidate versions")
+            citations = current.memory_citations if memory_citations is None else unique_references(memory_citations)
+            canonical_sources = await self._validate_evidence(
+                connection,
+                canonical_sources,
+                canonical_artifacts,
+                citations,
+                proposal=proposal if isinstance(proposal, (ExperienceContent, SkillContent)) else None,
+            )
+            if reviewed.family != "profile":
+                await self._validate_target(connection, reviewed.family, target, canonical_artifacts)
+            revised = await self._candidates.revise(
+                connection,
+                self._scope_id,
+                candidate_id,
+                expected_version,
+                proposal,
+                sources=canonical_sources,
+                artifacts=canonical_artifacts,
+                target=target,
+                reason=reason,
+                memory_citations=citations,
+            )
+        return _reviewed_candidate(revised)
+
+    async def reject(
+        self,
+        candidate_id: str,
+        expected_version: int,
+        reason: str,
+        /,
+    ) -> ReviewedCandidate:
+        _validate_reason(reason)
+        async with self._connection() as connection:
+            current = await self._candidates.get(connection, self._scope_id, candidate_id)
+            if current.family == "profile":
+                return _reviewed_candidate(
+                    await decide_profile(
+                        self,
+                        connection,
+                        candidate_id,
+                        expected_version,
+                        reason=reason,
+                    )
+                )
+            rejected = await self._candidates.reject(
+                connection,
+                self._scope_id,
+                candidate_id,
+                expected_version,
+                reason,
+            )
+        return _reviewed_candidate(rejected)
+
+    async def approve(
+        self,
+        candidate_id: str,
+        expected_version: int,
+        /,
+    ) -> ReviewedCandidate:
+        """Atomically commit the reviewed Artifact and Candidate result."""
+
+        async with self._connection() as connection:
+            current = await self._candidates.get(connection, self._scope_id, candidate_id)
+            if current.family == "profile":
+                return _reviewed_candidate(await decide_profile(self, connection, candidate_id, expected_version))
+            candidate = _reviewed_candidate(
+                await self._candidates.lock_pending(
+                    connection,
+                    self._scope_id,
+                    candidate_id,
+                    expected_version,
+                )
+            )
+            _validate_approval_lineage(candidate)
+            await self._validate_evidence(
+                connection,
+                candidate.sources,
+                candidate.artifacts,
+                candidate.memory_citations,
+                proposal=candidate.proposal if isinstance(candidate.proposal, ExperienceContent) else None,
+            )
+            if isinstance(candidate.proposal, SkillContent) and candidate.proposal.package is not None:
+                await self._canonical_skill_proposal(connection, candidate.proposal)
+            draft = _candidate_draft(candidate)
+            if candidate.target is None:
+                artifact = await self._artifacts.create(
+                    connection,
+                    self._scope_id,
+                    self._id_factory(candidate.family),
+                    draft,
+                )
+            else:
+                try:
+                    target = await self._artifacts.get(connection, self._scope_id, candidate.target)
+                    artifact = await self._artifacts.revise(connection, self._scope_id, target, draft)
+                except RevisionConflictError as error:
+                    current = error.current
+                    if not isinstance(current, Artifact) or current.family != candidate.family:
+                        raise
+                    raise ArtifactTargetConflictError(candidate.target, current.as_ref()) from error
+            if isinstance(artifact, Experience):
+                await self._experience_index.replace(connection, self._scope_id, artifact)
+            elif isinstance(artifact, Skill) and artifact.content.package is not None:
+                package = await self._skill_packages.get(connection, self._scope_id, artifact.content.package)
+                await self._experience_index.replace_skill(connection, self._scope_id, artifact, package)
+            approved = await self._candidates.mark_approved(
+                connection,
+                self._scope_id,
+                candidate_id,
+                expected_version,
+                artifact.as_ref(),
+            )
+        return _reviewed_candidate(approved)
+
+    async def get_experience(self, ref: ArtifactRef, /) -> Experience:
+        return cast(Experience, await self._get_artifact(ref, Experience))
+
+    async def get_skill(self, ref: ArtifactRef, /) -> Skill:
+        return cast(Skill, await self._get_artifact(ref, Skill))
+
+    async def _get_artifact(
+        self,
+        ref: ArtifactRef,
+        expected: type[ReviewedArtifact],
+        /,
+    ) -> ReviewedArtifact:
+        if ref.family != expected.family:
+            raise ArtifactNotFoundError(ref)
+        async with self._connection() as connection:
+            try:
+                artifact = await self._artifacts.get(connection, self._scope_id, ref)
+            except RepositoryNotFoundError:
+                raise ArtifactNotFoundError(ref) from None
+        if type(artifact) is not expected:
+            raise ArtifactNotFoundError(ref)
+        return cast(ReviewedArtifact, artifact)
+
+    async def _validate_evidence(
+        self,
+        connection: AsyncConnection,
+        sources: tuple[SourceRef, ...],
+        artifacts: tuple[ArtifactRef, ...],
+        memory_citations: tuple[MemoryCitation, ...] = (),
+        *,
+        proposal: ReviewedProposal | None = None,
+    ) -> tuple[SourceRef, ...]:
+        if not sources and not memory_citations and not any(artifact.family != "prompt" for artifact in artifacts):
+            raise InvalidCandidateError("evidence", "at least one exact reference is required")
+        if len(sources) + len(artifacts) + len(memory_citations) > MAX_CANDIDATE_EVIDENCE:
+            raise InvalidCandidateError("evidence", f"must not exceed {MAX_CANDIDATE_EVIDENCE} exact references")
+        try:
+            source_rows = await self._sources.require_for_generation(connection, self._scope_id, sources)
+            for artifact in artifacts:
+                await self._artifacts.get(connection, self._scope_id, artifact)
+        except RepositoryNotFoundError as error:
+            raise InvalidCandidateError("evidence", "reference is not available in this scope") from error
+        if self._evidence is not None:
+            roots = await self._evidence.validate(
+                connection,
+                sources=sources,
+                artifacts=artifacts,
+                memory_citations=memory_citations,
+            )
+            sources = _unique_sources((*sources, *roots))
+        elif memory_citations:
+            raise InvalidCandidateError("memory_citations", "Memory evidence resolution is unavailable")
+        if len(sources) + len(artifacts) + len(memory_citations) > MAX_CANDIDATE_EVIDENCE:
+            raise InvalidCandidateError("evidence", "resolved evidence exceeds the combined reference bound")
+        if (
+            isinstance(proposal, ExperienceContent)
+            and proposal.failure is not None
+            and not await _has_resolved_failure_evidence(
+                self._sources,
+                self._artifacts,
+                self._evidence,
+                connection,
+                self._scope_id,
+                source_rows,
+                proposal.failure.signature.recall_cue,
+            )
+        ):
+            raise InvalidCandidateError(
+                "evidence",
+                "failure records require a cited failed Task Outcome with verified exact evidence",
+            )
+        return sources
+
+    async def _validate_target(
+        self,
+        connection: AsyncConnection,
+        family: str,
+        target: ArtifactRef | None,
+        artifacts: tuple[ArtifactRef, ...],
+    ) -> None:
+        if target is None:
+            return
+        if target.family != family:
+            raise InvalidCandidateError("target", f"must identify a {family} Artifact")
+        if target not in artifacts:
+            raise InvalidCandidateError("artifacts", f"must include the exact target {family} Artifact")
+        try:
+            current = await self._artifacts.latest(
+                connection,
+                self._scope_id,
+                target.family,
+                target.artifact_id,
+            )
+        except RepositoryNotFoundError as error:
+            raise InvalidCandidateError("target", "Artifact is not available in this scope") from error
+        if current.as_ref() != target:
+            raise ArtifactTargetConflictError(target, current.as_ref())
+
+    async def prepare_skill(self, proposal: SkillContent, /) -> SkillContent:
+        """Build an instruction package before entering a Candidate commit transaction."""
+
+        if proposal.package is not None:
+            async with self._connection() as connection:
+                return await self._canonical_skill_proposal(connection, proposal)
+        snapshot = build_instruction_skill_package(proposal)
+        async with self._connection() as connection:
+            await self._skill_packages.add(connection, self._scope_id, snapshot)
+        return snapshot.as_skill_content()
+
+    async def _canonical_skill_proposal(
+        self,
+        connection: AsyncConnection,
+        proposal: SkillContent,
+        /,
+    ) -> SkillContent:
+        if proposal.package is None:
+            snapshot = build_instruction_skill_package(proposal)
+            await self._skill_packages.add(connection, self._scope_id, snapshot)
+        else:
+            try:
+                snapshot = await self._skill_packages.get(connection, self._scope_id, proposal.package)
+            except RepositoryNotFoundError as error:
+                raise InvalidCandidateError("package", "exact Skill package is not available in this scope") from error
+        canonical = snapshot.as_skill_content()
+        if proposal.package is not None and canonical != proposal:
+            raise InvalidCandidateError("package", "cached Skill fields do not match the exact package")
+        return canonical
+
+
+def _reviewed_candidate(candidate: ArtifactCandidate[Any]) -> ReviewedCandidate:
+    _validate_proposal_family(candidate.family, candidate.proposal)
+    return ArtifactCandidate[ReviewedProposal].model_validate(candidate.model_dump(mode="python"))
+
+
+def _experience_candidate(candidate: ArtifactCandidate[Any]) -> ArtifactCandidate[ExperienceContent]:
+    reviewed = _reviewed_candidate(candidate)
+    if reviewed.family != Experience.family or not isinstance(reviewed.proposal, ExperienceContent):
+        raise InvalidCandidateError("family", candidate.family)
+    return ArtifactCandidate[ExperienceContent].model_validate(reviewed.model_dump(mode="python"))
+
+
+def _skill_candidate(candidate: ArtifactCandidate[Any]) -> ArtifactCandidate[SkillContent]:
+    reviewed = _reviewed_candidate(candidate)
+    if reviewed.family != Skill.family or not isinstance(reviewed.proposal, SkillContent):
+        raise InvalidCandidateError("family", candidate.family)
+    return ArtifactCandidate[SkillContent].model_validate(reviewed.model_dump(mode="python"))
+
+
+def _validate_proposal_family(family: str, proposal: object) -> None:
+    expected = {
+        Experience.family: ExperienceContent,
+        Skill.family: SkillContent,
+        "profile": ProfileCandidateProposal,
+    }.get(family)
+    if expected is None or type(proposal) is not expected:
+        raise InvalidCandidateError("family", family)
+
+
+async def _has_resolved_failure_evidence(  # noqa: C901 - each citation kind has a distinct resolution boundary
+    sources: GenerationSourceAccess,
+    artifacts: ArtifactRepository,
+    evidence: EvidenceResolver | None,
+    connection: AsyncConnection,
+    scope_id: str,
+    rows: tuple[StoredSource, ...],
+    cue: str,
+    /,
+) -> bool:
+    try:
+        cue_key = normalize_match_text(cue)
+    except ValueError:
+        return False
+    for row in rows:
+        if not isinstance(row.value, ContentSource) or row.value.metadata.get("kind") != "task-outcome":
+            continue
+        try:
+            outcome = TaskOutcome.model_validate_json(row.value.content)
+        except ValidationError:
+            continue
+        for ref in failure_refs(outcome, row.ref):
+            items = outcome.checks if ref.item_kind == "check" else outcome.observations
+            item = items[ref.item_index]
+            if normalize_match_text(failure_item_text(item)) != cue_key:
+                continue
+            citations = item.evidence
+            source_refs = tuple(
+                citation.source_ref for citation in citations if isinstance(citation, HandoffSourceCitation)
+            )
+            artifact_refs = tuple(
+                citation.artifact_ref for citation in citations if isinstance(citation, HandoffArtifactCitation)
+            )
+            memory_citations = tuple(
+                citation.memory_citation for citation in citations if isinstance(citation, HandoffMemoryCitation)
+            )
+            try:
+                await sources.require_for_generation(connection, scope_id, source_refs)
+                for artifact_ref in artifact_refs:
+                    await artifacts.get(connection, scope_id, artifact_ref)
+                if memory_citations:
+                    if evidence is None:
+                        continue
+                    await evidence.validate(
+                        connection,
+                        sources=(),
+                        artifacts=(),
+                        memory_citations=memory_citations,
+                    )
+            except (EvidenceResolutionError, RepositoryNotFoundError):
+                continue
+            return True
+    return False
+
+
+def _validate_approval_lineage(candidate: ReviewedCandidate) -> None:
+    if candidate.family != Skill.family:
+        return
+    if candidate.target is None:
+        if any(
+            artifact.family != Experience.family
+            and not (artifact.family == "prompt" and artifact.artifact_id == "skill.generate")
+            for artifact in candidate.artifacts
+        ):
+            raise InvalidCandidateError(
+                "artifacts",
+                "new managed Skill lineage may reference only Experience Artifacts and its generation Prompt",
+            )
+        return
+    if candidate.target not in candidate.artifacts:
+        raise InvalidCandidateError("artifacts", "managed Skill lineage must include its exact target")
+    if not candidate.sources:
+        raise InvalidCandidateError("sources", "managed Skill replacement requires bounded Source evidence")
+
+
+def _candidate_draft(candidate: ReviewedCandidate) -> ReviewedDraft:
+    values: dict[str, object] = {
+        "content": candidate.proposal,
+        "sources": candidate.sources,
+        "artifacts": candidate.artifacts,
+        "memory_citations": candidate.memory_citations,
+    }
+    if candidate.family == Experience.family and isinstance(candidate.proposal, ExperienceContent):
+        return ExperienceDraft.model_validate(values)
+    if candidate.family == Skill.family and isinstance(candidate.proposal, SkillContent):
+        return SkillDraft.model_validate(values)
+    raise InvalidCandidateError("family", candidate.family)
+
+
+def _unique_sources(values: tuple[SourceRef, ...]) -> tuple[SourceRef, ...]:
+    seen: set[tuple[str, str]] = set()
+    result: list[SourceRef] = []
+    for value in values:
+        key = (value.source_type, value.source_id)
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return tuple(result)
+
+
+def _unique_artifacts(values: tuple[ArtifactRef, ...]) -> tuple[ArtifactRef, ...]:
+    seen: set[tuple[str, str, int]] = set()
+    result: list[ArtifactRef] = []
+    for value in values:
+        key = (value.family, value.artifact_id, value.revision)
+        if key not in seen:
+            seen.add(key)
+            result.append(value)
+    return tuple(result)
+
+
+def _validate_reason(value: str | None) -> None:
+    if value is None:
+        return
+    if not value.strip() or value != value.strip():
+        raise InvalidCandidateError("reason", "must be a non-empty trimmed string")
+    if len(value) > MAX_CANDIDATE_REASON_LENGTH:
+        raise InvalidCandidateError("reason", f"must not exceed {MAX_CANDIDATE_REASON_LENGTH} characters")
+
+
+__all__ = ["ReviewService"]

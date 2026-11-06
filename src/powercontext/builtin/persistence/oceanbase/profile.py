@@ -1,0 +1,233 @@
+# Copyright (c) 2026 OceanBase.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+# http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""OceanBase MySQL-mode profile using the official async SQLAlchemy dialect."""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+from dataclasses import dataclass
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field, SecretStr, field_validator
+from sqlalchemy import Table
+from sqlalchemy.dialects import registry as dialect_registry
+from sqlalchemy.engine import URL, make_url
+from sqlalchemy.exc import ArgumentError
+from sqlalchemy.ext.asyncio import AsyncConnection, AsyncEngine, create_async_engine
+
+from powercontext.builtin.persistence.database import AsyncDatabase
+from powercontext.builtin.persistence.errors import PersistenceError
+from powercontext.builtin.persistence.schema import create_tables
+from powercontext.builtin.persistence.tables import MYSQL_IDENTITY_COLLATION
+
+_DIALECT_DRIVER = "mysql+aoceanbase"
+_DIALECT_REGISTRY_NAME = "mysql.aoceanbase"
+_DIALECT_MODULE = "pyobvector"
+_DIALECT_CLASS = "AsyncOceanBaseDialect"
+_SCHEMA_COLUMNS_QUERY = """
+SELECT TABLE_NAME, COLUMN_NAME, COLLATION_NAME
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = DATABASE()
+  AND DATA_TYPE = 'varchar'
+"""
+_SCHEMA_RECREATION_GUIDE = (
+    "https://powercontext.oceanbase.io/en/docs/operate/troubleshoot/#oceanbase-startup-rejects-an-incompatible-schema"
+)
+
+
+@dataclass(frozen=True)
+class _IdentityCollationMismatch:
+    table_name: str
+    column_name: str
+    actual: str | None
+
+    @property
+    def qualified_name(self) -> str:
+        """Return the operator-facing table and column name."""
+
+        return f"{self.table_name}.{self.column_name}"
+
+
+class UnsupportedOceanBaseTenantError(PersistenceError):
+    """Raised when the connected tenant is not an OceanBase MySQL tenant."""
+
+    def __init__(self, compatibility_mode: str | None) -> None:
+        self.compatibility_mode = compatibility_mode
+        description = "missing ob_compatibility_mode" if compatibility_mode is None else repr(compatibility_mode)
+        super().__init__(f"OceanBase profile requires a MySQL-compatible tenant; found {description}")
+
+
+class IncompatibleOceanBaseSchemaError(PersistenceError):
+    """Raised when an existing identity column has unsafe comparison semantics."""
+
+    def __init__(self, mismatches: tuple[_IdentityCollationMismatch, ...]) -> None:
+        self.columns = tuple(mismatch.qualified_name for mismatch in mismatches)
+        details = "; ".join(
+            f"{mismatch.qualified_name} uses {mismatch.actual or 'NULL'} (expected {MYSQL_IDENTITY_COLLATION})"
+            for mismatch in mismatches
+        )
+        super().__init__(
+            "OceanBase schema has incompatible identity column collations: "
+            f"{details}. Back up the database, recreate the PowerContext schema, and restore the data before "
+            f"restarting. See {_SCHEMA_RECREATION_GUIDE}"
+        )
+
+
+class OceanBaseConfig(BaseModel):
+    """Validated component configuration for an OceanBase async engine."""
+
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    kind: Literal["oceanbase"] = "oceanbase"
+    url: Annotated[SecretStr, Field(repr=False)]
+    echo: bool = False
+    pool_pre_ping: bool = True
+
+    @field_validator("url")
+    @classmethod
+    def require_official_async_dialect(cls, value: SecretStr) -> SecretStr:
+        """Reject sync, generic MySQL and malformed URLs without exposing credentials."""
+
+        _validate_oceanbase_url(value.get_secret_value())
+        return value
+
+
+class OceanBaseProfile:
+    """An initialized OceanBase relational profile with explicit engine ownership."""
+
+    def __init__(self, *, database: AsyncDatabase, tables: tuple[Table, ...]) -> None:
+        self.database = database
+        self.tables = tables
+
+    @classmethod
+    @asynccontextmanager
+    async def open(
+        cls,
+        config: OceanBaseConfig,
+        *,
+        tables: tuple[Table, ...],
+    ) -> AsyncIterator[OceanBaseProfile]:
+        """Create, initialize and exclusively own an official OceanBase engine."""
+
+        _register_official_dialect()
+        engine = create_async_engine(
+            config.url.get_secret_value(),
+            # OceanBase's MySQL handshake can leave aiomysql believing the
+            # session is transactional while the server still autocommits.
+            # Explicitly disabling autocommit keeps SAVEPOINT-based conflict
+            # recovery and the surrounding publication transaction atomic.
+            connect_args={"init_command": "SET autocommit = 0"},
+            echo=config.echo,
+            hide_parameters=True,
+            pool_pre_ping=config.pool_pre_ping,
+        )
+        database = AsyncDatabase.own(engine)
+        async with _initialized_profile(cls(database=database, tables=tables)) as profile:
+            yield profile
+
+    @classmethod
+    @asynccontextmanager
+    async def attach(
+        cls,
+        engine: AsyncEngine,
+        *,
+        tables: tuple[Table, ...],
+    ) -> AsyncIterator[OceanBaseProfile]:
+        """Initialize a caller-owned official OceanBase engine without disposing it."""
+
+        _validate_oceanbase_url(engine.url)
+        database = AsyncDatabase.attach(engine)
+        async with _initialized_profile(cls(database=database, tables=tables)) as profile:
+            yield profile
+
+
+@asynccontextmanager
+async def _initialized_profile(profile: OceanBaseProfile) -> AsyncIterator[OceanBaseProfile]:
+    try:
+        async with profile.database.transaction() as connection:
+            await _require_mysql_tenant(connection)
+            await _require_compatible_identity_collations(connection, profile.tables)
+            await create_tables(connection, profile.tables)
+        yield profile
+    finally:
+        await profile.database.close()
+
+
+async def _require_mysql_tenant(connection: AsyncConnection) -> None:
+    # OceanBase documents this read-only variable as the authoritative tenant
+    # mode marker and SHOW VARIABLES as its supported query surface.
+    result = await connection.exec_driver_sql("SHOW VARIABLES LIKE 'ob_compatibility_mode'")
+    row = result.first()
+    mode = None if row is None or len(row) < 2 else str(row[1]).upper()
+    if mode != "MYSQL":
+        raise UnsupportedOceanBaseTenantError(mode)
+
+
+async def _require_compatible_identity_collations(
+    connection: AsyncConnection,
+    tables: tuple[Table, ...],
+) -> None:
+    """Reject legacy PowerContext VARCHAR columns with non-binary identity semantics."""
+
+    identity_columns = {
+        (table.name, column.name)
+        for table in tables
+        for column in table.columns
+        if getattr(column.type.dialect_impl(connection.dialect), "collation", None) == MYSQL_IDENTITY_COLLATION
+    }
+    if not identity_columns:
+        return
+
+    result = await connection.exec_driver_sql(_SCHEMA_COLUMNS_QUERY)
+    incompatible: list[_IdentityCollationMismatch] = []
+    for table_name_value, column_name_value, actual_value in result.all():
+        table_name = str(table_name_value)
+        column_name = str(column_name_value)
+        if (table_name, column_name) not in identity_columns:
+            continue
+        actual_collation = None if actual_value is None else str(actual_value)
+        if actual_collation is None or actual_collation.casefold() != MYSQL_IDENTITY_COLLATION.casefold():
+            incompatible.append(_IdentityCollationMismatch(table_name, column_name, actual_collation))
+
+    if incompatible:
+        raise IncompatibleOceanBaseSchemaError(tuple(sorted(incompatible, key=lambda item: item.qualified_name)))
+
+
+def _register_official_dialect() -> None:
+    # pyobvector publishes the official AsyncOceanBaseDialect but currently
+    # documents explicit SQLAlchemy registry setup instead of an entry point.
+    dialect_registry.register(_DIALECT_REGISTRY_NAME, _DIALECT_MODULE, _DIALECT_CLASS)
+
+
+def _validate_oceanbase_url(value: str | URL) -> URL:
+    try:
+        url = make_url(value)
+    except (ArgumentError, TypeError, ValueError):
+        raise ValueError("OceanBase profile URL is invalid") from None  # noqa: TRY003
+
+    if url.drivername != _DIALECT_DRIVER:
+        raise ValueError(f"OceanBase profile URL must use {_DIALECT_DRIVER}")  # noqa: TRY003
+    if not url.username:
+        raise ValueError("OceanBase profile URL must include a username")  # noqa: TRY003
+    if not url.host:
+        raise ValueError("OceanBase profile URL must include a host")  # noqa: TRY003
+    if url.port is None:
+        raise ValueError("OceanBase profile URL must include an explicit port")  # noqa: TRY003
+    if not url.database:
+        raise ValueError("OceanBase profile URL must include a database")  # noqa: TRY003
+    if url.query.get("charset") != "utf8mb4":
+        raise ValueError("OceanBase profile URL must set charset=utf8mb4")  # noqa: TRY003
+    return url
