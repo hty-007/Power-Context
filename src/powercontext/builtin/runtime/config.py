@@ -137,6 +137,29 @@ class RuntimeConfig(BaseModel):
 
     scope_cache_size: int = Field(default=DEFAULT_SCOPE_CACHE_SIZE, ge=1)
     source_window_limit: int = Field(default=100, ge=1)
+    # A Scope starts one ordinary processing window once this many new journal identities
+    # accumulate behind the family's committed Source cursor. Absence keeps the original
+    # time-only behaviour, and the window limit still bounds one read.
+    memory_source_count_threshold: int | None = Field(default=None, gt=0)
+    topic_memory_source_count_threshold: int | None = Field(default=None, gt=0)
+
+    @field_validator(
+        "memory_source_count_threshold",
+        "topic_memory_source_count_threshold",
+        mode="before",
+    )
+    @classmethod
+    def reject_non_integer_source_count_threshold(cls, value: Any) -> Any:
+        if value is None:
+            return None
+        # ``bool`` is an ``int`` subclass, and a coerced string or float would silently change
+        # when a Scope starts processing, so every value must arrive as a real integer.
+        if isinstance(value, bool) or not isinstance(value, int):
+            raise ValueError(  # noqa: TRY003, TRY004 - Pydantic validation
+                "Source count threshold must be a positive integer"
+            )
+        return value
+
     context_assembly_max_entries: int = Field(default=8, ge=1)
     memory_extraction_profile: MemoryExtractionProfile = MemoryExtractionProfile.CODING
     memory_rerank_enabled: bool = False

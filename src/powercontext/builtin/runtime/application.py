@@ -248,6 +248,7 @@ from powercontext.builtin.runtime.recall_sufficiency import (
     build_recall_candidates,
     recall_effort,
 )
+from powercontext.builtin.runtime.source_count import FAMILY_CURSORS, SourceCountTrigger
 from powercontext.builtin.runtime.statistics import RelationalScopedStatistics, overview_selection
 from powercontext.builtin.scope import ScopeApplication, ScopeDescriptor, ScopeSelection
 from powercontext.builtin.scope.subject_sources import SubjectSourceService
@@ -3082,6 +3083,8 @@ class BuiltinRuntime:
         self._tracing = tracing
         self._scheduled_source_runner = scheduled_source_runner
         self._scheduled_experience_runner = scheduled_experience_runner
+        self._scope_ids = scope_ids
+        self._source_count_trigger: SourceCountTrigger | None = None
         self.source_window_limit = source_window_limit
         self.context_assembly_max_entries = context_assembly_max_entries
         self.recall_sufficiency_policy = recall_sufficiency_policy
@@ -3240,6 +3243,53 @@ class BuiltinRuntime:
             self._scheduler = None
             raise
 
+    def start_source_count_trigger(
+        self,
+        *,
+        memory_threshold: int | None,
+        topic_memory_threshold: int | None,
+    ) -> None:
+        """Start count-based admission for the families this deployment can process.
+
+        Count admission is additive: it shortens the wait for a busy Scope without removing the
+        time condition, and an explicit flush still bypasses both. Nothing starts when every
+        threshold is unset, so the original time-only deployment behaviour is unchanged.
+        """
+
+        thresholds: dict[str, int] = {}
+        if memory_threshold is not None:
+            thresholds[MEMORY_FAMILY] = memory_threshold
+        if (
+            topic_memory_threshold is not None
+            and self._topic_memory_processing_available
+            and self._topic_memory_flush is not None
+        ):
+            thresholds[TOPIC_MEMORY_FAMILY] = topic_memory_threshold
+        if not thresholds or self._scope_ids is None or self._source_count_trigger is not None:
+            return
+        self._source_count_trigger = SourceCountTrigger(
+            scope_ids=self._scope_ids,
+            count_pending=self._count_pending_sources,
+            process_window=self._process_source_window,
+            thresholds=thresholds,
+        )
+        self._source_count_trigger.start()
+
+    async def _count_pending_sources(self, scope_id: str, family: str) -> int:
+        return await self._provider.count_pending_sources(scope_id, FAMILY_CURSORS[family])
+
+    async def _process_source_window(self, scope_id: str, family: str) -> None:
+        """Run exactly the call the time condition or an explicit flush would run."""
+
+        if family == TOPIC_MEMORY_FAMILY:
+            await self.topic_memory.for_scope(scope_id).flush()
+            return
+        runner = self._scheduled_source_runner
+        if runner is None:
+            await self.memory.for_scope(scope_id).flush()
+            return
+        await runner(scope_id, self)
+
     def configure_evidence_authorization(
         self,
         *,
@@ -3265,6 +3315,11 @@ class BuiltinRuntime:
                 return
             if self._scheduler is not None and self._scheduler.running:
                 self._scheduler.pause()
+            # Stop admitting new count-triggered windows before waiting for in-flight work,
+            # otherwise the watcher would keep the operation count above zero.
+            count_trigger, self._source_count_trigger = self._source_count_trigger, None
+            if count_trigger is not None:
+                await count_trigger.aclose()
             async with self._lifecycle:
                 self._closing = True
                 await self._lifecycle.wait_for(lambda: self._active_operations == 0)

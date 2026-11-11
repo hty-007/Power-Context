@@ -665,6 +665,10 @@ async def open_builtin_runtime(
         if config.runtime.memory_rerank_enabled and configured_reranker is None:
             raise BuiltinConfigurationError("memory-reranker")
         _require_decision_backend(config.runtime, configured_decision)
+        runtime.start_source_count_trigger(
+            memory_threshold=config.runtime.memory_source_count_threshold,
+            topic_memory_threshold=config.runtime.topic_memory_source_count_threshold,
+        )
         yield runtime
 
 

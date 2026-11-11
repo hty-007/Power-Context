@@ -952,6 +952,21 @@ class RelationalContexts:
                 )
         return pending is not None
 
+    async def count_pending_sources(self, scope_id: str, cursor_name: str, /) -> int:
+        """Count journal identities behind one family's committed Source cursor.
+
+        Counts persisted journal positions, so replaying an identity or upgrading an existing
+        Source receipt leaves the count unchanged. Journal positions are per Scope, which keeps
+        neighbouring Scopes and families out of each other's admission decision.
+        """
+
+        scope = validate_scope_id(scope_id)
+        async with self.database.transaction() as connection:
+            state = await self.repositories.cursors.load(connection, scope, cursor_name)
+            high_watermark = await self.repositories.sources.journal_position(connection, scope)
+        committed = 0 if state is None else state.cursor.sequence
+        return max(0, high_watermark - committed)
+
     async def browse_topic_memories(
         self,
         scope_id: str,
