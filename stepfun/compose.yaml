@@ -1,0 +1,12 @@
+services:
+  seekdb:
+    image: oceanbase/seekdb:1.4.0-100000172026082615
+    environment:
+      ROOT_PASSWORD: ${NOTES_DB_PASSWORD:?Set NOTES_DB_PASSWORD before starting}
+    ports:
+      - '127.0.0.1:${NOTES_DB_PORT:-12881}:2881'
+    volumes:
+      - seekdb-data:/var/lib/seekdb
+
+volumes:
+  seekdb-data:
