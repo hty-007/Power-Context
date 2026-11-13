@@ -1,0 +1,13 @@
+[
+  { "id": "ISS-101", "kind": "spec", "path": "docs/requirements.md", "section": "ISS-101 负责人匹配", "v2Path": "revisions/v2/requirements.md", "tasks": ["assignee-filter"] },
+  { "id": "ISS-102", "kind": "spec", "path": "docs/requirements.md", "section": "ISS-102 空值兼容", "v2Path": "revisions/v2/requirements.md", "tasks": ["assignee-filter"] },
+  { "id": "ISS-103", "kind": "spec", "path": "docs/requirements.md", "section": "ISS-103 组合与兼容", "v2Path": "revisions/v2/requirements.md", "tasks": ["assignee-filter"] },
+  { "id": "CODE-LIST", "kind": "code", "path": "before/list.mjs", "symbol": "listIssues", "tasks": ["assignee-filter"] },
+  { "id": "TEST-ASSIGNEE", "kind": "test", "path": "tests/assignee.test.mjs", "tasks": ["assignee-filter"] },
+  { "id": "TEST-REGRESSION", "kind": "test", "path": "tests/regression.test.mjs", "tasks": ["assignee-filter"] },
+  { "id": "TEST-LOADER", "kind": "test", "path": "tests/load-implementation.mjs", "tasks": ["assignee-filter"] },
+  { "id": "DATA-ISSUES", "kind": "data", "path": "initial-data.mjs", "tasks": ["assignee-filter", "label-summary"] },
+  { "id": "LAB-201", "kind": "spec", "path": "docs/labels.md", "section": "LAB-201 单工单去重", "tasks": ["label-summary"] },
+  { "id": "CODE-LABELS", "kind": "code", "path": "before/labels.mjs", "symbol": "countLabels", "tasks": ["label-summary"] },
+  { "id": "TEST-LABELS", "kind": "test", "path": "tests/labels.test.mjs", "tasks": ["label-summary"] }
+]

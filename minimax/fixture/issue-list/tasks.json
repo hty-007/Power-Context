@@ -1,0 +1,12 @@
+{
+  "assignee-filter": {
+    "title": "给工单列表增加负责人筛选",
+    "request": "在 listIssues 中按负责人全名筛选，使其可与 status、query 组合，并保持已有接口行为。",
+    "initialActions": ["核对适用规格与基线测试", "让 MiniMax 实现负责人筛选", "运行目标功能与回归测试"]
+  },
+  "label-summary": {
+    "title": "核对标签计数",
+    "request": "核对 countLabels 在每条工单内去重的逻辑。",
+    "initialActions": ["核对标签计数规格与测试"]
+  }
+}

@@ -1,0 +1,105 @@
+你正在实现一个规格驱动开发任务。下面给出了 seekdb 查出的完整工程上下文，以及从 PowerContext 恢复的基线状态。
+任务 给工单列表增加负责人筛选。 在 listIssues 中按负责人全名筛选，使其可与 status、query 组合，并保持已有接口行为。
+当前规格版本 v1。已完成 核对适用规格与基线测试。待办 让 MiniMax 实现负责人筛选、运行目标功能与回归测试。基线测试 target 通过 0，失败 4，退出码 1；regression 通过 3，失败 0，退出码 0。
+请输出一份完整的 JavaScript 模块，供直接写入 fixture/issue-list/after/list.mjs。只用一个 javascript 代码块输出源代码。保持相同的导出名称。只修改 listIssues，不改测试或数据。仅用给定上下文，不调用任何工具。
+
+[ISS-101 · spec] docs/requirements.md:3-5
+## ISS-101 负责人匹配
+
+在 `listIssues(issues, filters)` 中增加可选字符串字段 `filters.assignee`。对筛选值和已指派工单的负责人都去掉首尾空格，再以小写比较。只接受全名匹配。未指派的工单不能匹配非空负责人。
+
+[ISS-102 · spec] docs/requirements.md:7-9
+## ISS-102 空值兼容
+
+省略 `assignee`、传入 `null`、空字符串或去掉首尾空白后为空的字符串时，不启用负责人筛选。
+
+[ISS-103 · spec] docs/requirements.md:11-13
+## ISS-103 组合与兼容
+
+负责人筛选与现有 `status`、`query` 筛选同时启用时为逻辑与。保留状态精确匹配和标题子串查询的行为，保留结果的输入顺序与对象引用。返回新数组，且不修改输入数组、工单或筛选对象。
+
+[CODE-LIST · code] before/list.mjs:1-8
+符号 listIssues
+export function listIssues(issues, { status, query } = {}) {
+  const needle = (query ?? '').trim().toLowerCase();
+
+  return issues.filter(issue =>
+    (!status || issue.status === status) &&
+    (!needle || issue.title.toLowerCase().includes(needle))
+  );
+}
+
+[TEST-ASSIGNEE · test] tests/assignee.test.mjs:1-26
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { issues } from '../initial-data.mjs';
+import { listIssues } from './load-implementation.mjs';
+
+const ids = rows => rows.map(row => row.id);
+
+test('ISS-101 normalizes both owner names, matches the whole name and preserves order', () => {
+  assert.deepEqual(ids(listIssues(issues, { assignee: ' lIn ' })), ['T-08', 'T-03', 'T-07']);
+});
+
+test('ISS-101 trims tabs and full-width spaces on both sides', () => {
+  assert.deepEqual(ids(listIssues(issues, { assignee: '\tLIN\u3000' })), ['T-08', 'T-03', 'T-07']);
+});
+
+test('ISS-101 returns an empty list when no issue has that owner', () => {
+  assert.deepEqual(ids(listIssues(issues, { assignee: 'Unknown' })), []);
+});
+
+test('ISS-103 combines owner, status and title by intersection', () => {
+  const filters = Object.freeze({ assignee: 'LIN', status: 'open', query: ' cAcHe ' });
+  const result = listIssues(issues, filters);
+  assert.deepEqual(ids(result), ['T-08']);
+  assert.equal(result[0], issues[0]);
+  assert.notEqual(result, issues);
+});
+
+[TEST-LOADER · test] tests/load-implementation.mjs:1-4
+const variant = process.env.SDD_IMPLEMENTATION ?? 'after';
+if (!['before', 'after'].includes(variant)) throw new Error('SDD_IMPLEMENTATION must be before or after');
+
+export const { listIssues } = await import(`../${variant}/list.mjs`);
+
+[TEST-REGRESSION · test] tests/regression.test.mjs:1-27
+import assert from 'node:assert/strict';
+import test from 'node:test';
+import { issues } from '../initial-data.mjs';
+import { listIssues } from './load-implementation.mjs';
+
+const ids = rows => rows.map(row => row.id);
+
+test('ISS-102 omitted and blank owners keep every issue, including unassigned issues', () => {
+  for (const filters of [{}, { assignee: null }, { assignee: '' }, { assignee: '\t\u3000 ' }]) {
+    assert.deepEqual(listIssues(issues, filters), issues);
+  }
+  const result = listIssues(issues);
+  assert.deepEqual(result, issues);
+  assert.notEqual(result, issues);
+  assert.equal(result[0], issues[0]);
+});
+
+test('ISS-103 status is exact and title search is case insensitive', () => {
+  assert.deepEqual(ids(listIssues(issues, { status: 'open', query: ' CACHE ' })), ['T-08', 'T-11', 'T-01']);
+  assert.deepEqual(listIssues(issues, { status: 'Open' }), []);
+});
+
+test('ISS-103 title-only search and empty result behavior stay compatible', () => {
+  assert.deepEqual(ids(listIssues(issues, { query: 'efresh' })), ['T-03']);
+  assert.deepEqual(listIssues(issues, { query: 'not present' }), []);
+  assert.deepEqual(listIssues([], { status: 'open' }), []);
+});
+
+[DATA-ISSUES · data] initial-data.mjs:1-10
+const records = [
+  { id: 'T-08', title: 'Cache warm-up', status: 'open', assignee: ' Lin ', labels: ['infra', 'infra'] },
+  { id: 'T-03', title: 'Cache refresh', status: 'done', assignee: 'LIN', labels: ['infra'] },
+  { id: 'T-11', title: 'Cache timeout', status: 'open', assignee: 'Lina', labels: ['infra', 'urgent'] },
+  { id: 'T-01', title: 'Cache metrics', status: 'open', assignee: null, labels: ['observability'] },
+  { id: 'T-07', title: 'Review errors', status: 'open', assignee: '\u3000lin\t' },
+  { id: 'T-14', title: 'Improve index', status: 'open' },
+];
+
+export const issues = Object.freeze(records.map(issue => Object.freeze(issue)));

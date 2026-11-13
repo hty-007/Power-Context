@@ -1,0 +1,65 @@
+{
+  "provider": "MiniMaxAI (public weights, local inference)",
+  "model": "MiniMaxAI/SynLogic-7B",
+  "upstreamModelRevision": "bfcdfe2571549f8c40f1169cd62221abed5a5cbe",
+  "quantizationRepository": "tensorblock/MiniMaxAI_SynLogic-7B-GGUF",
+  "weightsRevision": "a05e87469d413a5a433358e90880e102184ba5a3",
+  "weights": "SynLogic-7B-Q3_K_M.gguf",
+  "weightsSha256": "21be91c718f3909a7faa4a4705e432bc477bfec9a687a698ff5e2b5f9dab8e72",
+  "runtime": "llama.cpp",
+  "build": "version: 1.0.0-dev (build 12360, commit 2d8a32502)",
+  "command": [
+    "llama-server",
+    "--model",
+    "SynLogic-7B-Q3_K_M.gguf",
+    "--alias",
+    "MiniMaxAI/SynLogic-7B",
+    "--host",
+    "127.0.0.1",
+    "--port",
+    "18867",
+    "--ctx-size",
+    "4096",
+    "--parallel",
+    "1",
+    "--n-gpu-layers",
+    "99",
+    "--device",
+    "Vulkan0"
+  ],
+  "method": "POST",
+  "path": "/v1/chat/completions",
+  "options": {
+    "temperature": 0.2,
+    "top_p": 0.9,
+    "max_tokens": 1800,
+    "seed": 20261113,
+    "stream": false
+  },
+  "requestAt": "2026-11-13T12:44:56.584Z",
+  "finishedAt": "2026-11-13T12:45:45.577Z",
+  "responseId": "chatcmpl-18W3YR7lCMJtbmvX7I1tlTatl3RetAlW",
+  "finishReason": "stop",
+  "usage": {
+    "completion_tokens": 102,
+    "prompt_tokens": 1519,
+    "total_tokens": 1621,
+    "prompt_tokens_details": {
+      "cached_tokens": 0
+    }
+  },
+  "timings": {
+    "cache_n": 0,
+    "prompt_n": 1519,
+    "prompt_ms": 44989.656,
+    "prompt_per_token_ms": 29.617943383805137,
+    "prompt_per_second": 33.76331661660183,
+    "predicted_n": 102,
+    "predicted_ms": 3968.073,
+    "predicted_per_token_ms": 39.287851485148515,
+    "predicted_per_second": 25.45316076594357
+  },
+  "promptSha256": "8a8241209b83c91e3e7adb19b51135cc61baef34a740a281d70427f67ef34c12",
+  "answerSha256": "803c0dc776c6770b3f090ca7fe3ade6b753993c69f2a43c3e11ce686e183ac19",
+  "extractedCodeSha256": "045686653653d76a0524a6acc82bc462fa659fc1099a770a93e3024568491d61"
+}

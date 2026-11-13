@@ -1,0 +1,176 @@
+{
+  "project": "issue-list",
+  "taskId": "assignee-filter",
+  "task": {
+    "title": "给工单列表增加负责人筛选",
+    "request": "在 listIssues 中按负责人全名筛选，使其可与 status、query 组合，并保持已有接口行为。",
+    "initialActions": [
+      "核对适用规格与基线测试",
+      "让 MiniMax 实现负责人筛选",
+      "运行目标功能与回归测试"
+    ]
+  },
+  "scopeId": "scp_1d60hg89jw8rr03zagt37sqbtc",
+  "revision": "v2",
+  "contextSha256": "5b9e4b35c7f554a3462c6aeb0b7f5bd04a4742458f2013873391b576c9d2942d",
+  "artifact": {
+    "scope_id": "scp_1d60hg89jw8rr03zagt37sqbtc",
+    "family": "atomic-memory",
+    "artifact_id": "art_fa2396d144694950b6dedcd27c5f2e51",
+    "revision": 3,
+    "content": {
+      "schema": "powercontext.atomic-memory.v1",
+      "kind": "sdd-issue-list-assignee-filter",
+      "text": "{\"status\":\"complete\",\"revision\":\"v2\",\"contextSha256\":\"5b9e4b35c7f554a3462c6aeb0b7f5bd04a4742458f2013873391b576c9d2942d\",\"completed\":[\"核对适用规格与基线测试\",\"让 MiniMax 实现负责人筛选\",\"运行目标功能与回归测试\"],\"pending\":[],\"verification\":{\"before\":{\"implementationSha256\":\"f0cd985e8dcdf1a463f553fd3d2541e46deeeac418c6aeede2656550a1d8901b\",\"testHashes\":{\"tests/load-implementation.mjs\":\"083dc636ff3fd944e96ff36d32922d872dfa1e8056d9ce9d6f0d9cbec5ae5c54\",\"initial-data.mjs\":\"c07cf3ba14a428ee87e0b8d14b1311630e28c4670162e95b3ca0b7325335df14\",\"tests/assignee.test.mjs\":\"85520f44f12f28a40695a2ae6bfe4174b2c6f4fc123a08e1eb6f861ad1ef0dc0\",\"tests/regression.test.mjs\":\"c8c98ae17b1e627ef66a3eb373d774035b9c95df8f108f33372696d2670f6867\"},\"results\":[{\"kind\":\"target\",\"command\":\"node --test --test-reporter=tap fixture/issue-list/tests/assignee.test.mjs\",\"exitCode\":1,\"passed\":0,\"failed\":4,\"assertionFailures\":4},{\"kind\":\"regression\",\"command\":\"node --test --test-reporter=tap fixture/issue-list/tests/regression.test.mjs\",\"exitCode\":0,\"passed\":3,\"failed\":0,\"assertionFailures\":0}]},\"after\":{\"implementationSha256\":\"0608cb340f2e6368d85de6b38bdc91d734b437e0380933472dc5ca9cda33d4e4\",\"testHashes\":{\"tests/load-implementation.mjs\":\"083dc636ff3fd944e96ff36d32922d872dfa1e8056d9ce9d6f0d9cbec5ae5c54\",\"initial-data.mjs\":\"c07cf3ba14a428ee87e0b8d14b1311630e28c4670162e95b3ca0b7325335df14\",\"tests/assignee.test.mjs\":\"85520f44f12f28a40695a2ae6bfe4174b2c6f4fc123a08e1eb6f861ad1ef0dc0\",\"tests/regression.test.mjs\":\"c8c98ae17b1e627ef66a3eb373d774035b9c95df8f108f33372696d2670f6867\"},\"results\":[{\"kind\":\"target\",\"command\":\"node --test --test-reporter=tap fixture/issue-list/tests/assignee.test.mjs\",\"exitCode\":0,\"passed\":4,\"failed\":0,\"assertionFailures\":0},{\"kind\":\"regression\",\"command\":\"node --test --test-reporter=tap fixture/issue-list/tests/regression.test.mjs\",\"exitCode\":0,\"passed\":3,\"failed\":0,\"assertionFailures\":0}]}},\"nextAction\":\"提交已验证的修改\"}",
+      "creation": null
+    },
+    "sources": [
+      {
+        "source_type": "content",
+        "source_id": "src_356f1bfd85c54724925dbe80370916e2"
+      }
+    ],
+    "artifacts": [
+      {
+        "family": "atomic-memory",
+        "artifact_id": "art_fa2396d144694950b6dedcd27c5f2e51",
+        "revision": 2
+      }
+    ],
+    "content_digest": "sha256:b707ccf1e6d79b66675a0bd660a07e8d03228968a8c3295091d6e2bae5397369",
+    "created_at": "2026-11-13T14:08:08.226958Z",
+    "created_by": null,
+    "restored_from_revision": null,
+    "reason": null
+  },
+  "progress": {
+    "status": "complete",
+    "revision": "v2",
+    "contextSha256": "5b9e4b35c7f554a3462c6aeb0b7f5bd04a4742458f2013873391b576c9d2942d",
+    "completed": [
+      "核对适用规格与基线测试",
+      "让 MiniMax 实现负责人筛选",
+      "运行目标功能与回归测试"
+    ],
+    "pending": [],
+    "verification": {
+      "before": {
+        "implementationSha256": "f0cd985e8dcdf1a463f553fd3d2541e46deeeac418c6aeede2656550a1d8901b",
+        "testHashes": {
+          "tests/load-implementation.mjs": "083dc636ff3fd944e96ff36d32922d872dfa1e8056d9ce9d6f0d9cbec5ae5c54",
+          "initial-data.mjs": "c07cf3ba14a428ee87e0b8d14b1311630e28c4670162e95b3ca0b7325335df14",
+          "tests/assignee.test.mjs": "85520f44f12f28a40695a2ae6bfe4174b2c6f4fc123a08e1eb6f861ad1ef0dc0",
+          "tests/regression.test.mjs": "c8c98ae17b1e627ef66a3eb373d774035b9c95df8f108f33372696d2670f6867"
+        },
+        "results": [
+          {
+            "kind": "target",
+            "command": "node --test --test-reporter=tap fixture/issue-list/tests/assignee.test.mjs",
+            "exitCode": 1,
+            "passed": 0,
+            "failed": 4,
+            "assertionFailures": 4
+          },
+          {
+            "kind": "regression",
+            "command": "node --test --test-reporter=tap fixture/issue-list/tests/regression.test.mjs",
+            "exitCode": 0,
+            "passed": 3,
+            "failed": 0,
+            "assertionFailures": 0
+          }
+        ]
+      },
+      "after": {
+        "implementationSha256": "0608cb340f2e6368d85de6b38bdc91d734b437e0380933472dc5ca9cda33d4e4",
+        "testHashes": {
+          "tests/load-implementation.mjs": "083dc636ff3fd944e96ff36d32922d872dfa1e8056d9ce9d6f0d9cbec5ae5c54",
+          "initial-data.mjs": "c07cf3ba14a428ee87e0b8d14b1311630e28c4670162e95b3ca0b7325335df14",
+          "tests/assignee.test.mjs": "85520f44f12f28a40695a2ae6bfe4174b2c6f4fc123a08e1eb6f861ad1ef0dc0",
+          "tests/regression.test.mjs": "c8c98ae17b1e627ef66a3eb373d774035b9c95df8f108f33372696d2670f6867"
+        },
+        "results": [
+          {
+            "kind": "target",
+            "command": "node --test --test-reporter=tap fixture/issue-list/tests/assignee.test.mjs",
+            "exitCode": 0,
+            "passed": 4,
+            "failed": 0,
+            "assertionFailures": 0
+          },
+          {
+            "kind": "regression",
+            "command": "node --test --test-reporter=tap fixture/issue-list/tests/regression.test.mjs",
+            "exitCode": 0,
+            "passed": 3,
+            "failed": 0,
+            "assertionFailures": 0
+          }
+        ]
+      }
+    },
+    "nextAction": "提交已验证的修改"
+  },
+  "checks": {
+    "variant": "after",
+    "implementation": "after/list.mjs",
+    "implementationSha256": "0608cb340f2e6368d85de6b38bdc91d734b437e0380933472dc5ca9cda33d4e4",
+    "testHashes": {
+      "tests/load-implementation.mjs": "083dc636ff3fd944e96ff36d32922d872dfa1e8056d9ce9d6f0d9cbec5ae5c54",
+      "initial-data.mjs": "c07cf3ba14a428ee87e0b8d14b1311630e28c4670162e95b3ca0b7325335df14",
+      "tests/assignee.test.mjs": "85520f44f12f28a40695a2ae6bfe4174b2c6f4fc123a08e1eb6f861ad1ef0dc0",
+      "tests/regression.test.mjs": "c8c98ae17b1e627ef66a3eb373d774035b9c95df8f108f33372696d2670f6867"
+    },
+    "results": [
+      {
+        "kind": "target",
+        "command": "node --test --test-reporter=tap fixture/issue-list/tests/assignee.test.mjs",
+        "exitCode": 0,
+        "passed": 4,
+        "failed": 0,
+        "assertionFailures": 0,
+        "log": "TAP version 13\n# Subtest: ISS-101 normalizes both owner names, matches the whole name and preserves order\nok 1 - ISS-101 normalizes both owner names, matches the whole name and preserves order\n  ---\n  duration_ms: 3.2787\n  type: 'test'\n  ...\n# Subtest: ISS-101 trims tabs and full-width spaces on both sides\nok 2 - ISS-101 trims tabs and full-width spaces on both sides\n  ---\n  duration_ms: 0.2501\n  type: 'test'\n  ...\n# Subtest: ISS-101 returns an empty list when no issue has that owner\nok 3 - ISS-101 returns an empty list when no issue has that owner\n  ---\n  duration_ms: 0.1849\n  type: 'test'\n  ...\n# Subtest: ISS-103 combines owner, status and title by intersection\nok 4 - ISS-103 combines owner, status and title by intersection\n  ---\n  duration_ms: 0.2881\n  type: 'test'\n  ...\n1..4\n# tests 4\n# suites 0\n# pass 4\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 139.2124\n"
+      },
+      {
+        "kind": "regression",
+        "command": "node --test --test-reporter=tap fixture/issue-list/tests/regression.test.mjs",
+        "exitCode": 0,
+        "passed": 3,
+        "failed": 0,
+        "assertionFailures": 0,
+        "log": "TAP version 13\n# Subtest: ISS-102 omitted and blank owners keep every issue, including unassigned issues\nok 1 - ISS-102 omitted and blank owners keep every issue, including unassigned issues\n  ---\n  duration_ms: 3.0962\n  type: 'test'\n  ...\n# Subtest: ISS-103 status is exact and title search is case insensitive\nok 2 - ISS-103 status is exact and title search is case insensitive\n  ---\n  duration_ms: 0.293\n  type: 'test'\n  ...\n# Subtest: ISS-103 title-only search and empty result behavior stay compatible\nok 3 - ISS-103 title-only search and empty result behavior stay compatible\n  ---\n  duration_ms: 0.2371\n  type: 'test'\n  ...\n1..3\n# tests 3\n# suites 0\n# pass 3\n# fail 0\n# cancelled 0\n# skipped 0\n# todo 0\n# duration_ms 142.2467\n"
+      }
+    ]
+  },
+  "processId": 19284,
+  "powerContext": {
+    "version": "1.4.1",
+    "processId": 21576,
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/v1/scopes",
+        "status": 201,
+        "requestId": "db69d00a49be927d"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/atomic-memory/list",
+        "status": 200,
+        "requestId": "b9fa87d3969decb4"
+      },
+      {
+        "method": "GET",
+        "path": "/v1/scopes/scp_1d60hg89jw8rr03zagt37sqbtc/artifacts/atomic-memory/art_fa2396d144694950b6dedcd27c5f2e51",
+        "status": 200,
+        "requestId": "c42f6d053e8badd6"
+      },
+      {
+        "method": "PUT",
+        "path": "/v1/scopes/scp_1d60hg89jw8rr03zagt37sqbtc/artifacts/atomic-memory/art_fa2396d144694950b6dedcd27c5f2e51",
+        "status": 200,
+        "requestId": "3a60589814ec35dc"
+      }
+    ]
+  }
+}

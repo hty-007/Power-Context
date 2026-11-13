@@ -1,0 +1,16 @@
+diff --git a/fixture/issue-list/before/list.mjs b/fixture/issue-list/after/list.mjs
+index 8322216..72d1249 100644
+--- a/fixture/issue-list/before/list.mjs
++++ b/fixture/issue-list/after/list.mjs
+@@ -1,3 +1,4 @@
+-export function listIssues(issues, { status, query } = {}) {
++export function listIssues(issues, { status, query, assignee } = {}) {
+   const needle = (query ?? '').trim().toLowerCase();
++  const assigneeNeedle = (assignee ?? '').trim().toLowerCase();
+
+@@ -5,3 +6,4 @@ export function listIssues(issues, { status, query } = {}) {
+     (!status || issue.status === status) &&
+-    (!needle || issue.title.toLowerCase().includes(needle))
++    (!needle || issue.title.toLowerCase().includes(needle)) &&
++    (!assigneeNeedle || (issue.assignee ?? '').trim().toLowerCase() === assigneeNeedle)
+   );

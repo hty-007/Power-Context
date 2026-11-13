@@ -1,0 +1,62 @@
+{
+  "engine": "5.7.25-OceanBase seekdb-v1.4.0.0",
+  "revision": "v1",
+  "stored": 11,
+  "records": [
+    {
+      "id": "ISS-101",
+      "path": "docs/requirements.md",
+      "sha256": "b40564c7f3edae834616718ee7192647d65806b3cf04e7f9f0754c0740e2fcc3"
+    },
+    {
+      "id": "ISS-102",
+      "path": "docs/requirements.md",
+      "sha256": "0f803ee029bd2cc0c9f318d12a774c3e603ae9be1634feb649b627dea456223a"
+    },
+    {
+      "id": "ISS-103",
+      "path": "docs/requirements.md",
+      "sha256": "88a3d6fa8ba163cb1c1856333d0fbc0a2c3e84c46894705b912caf7ee4b03af1"
+    },
+    {
+      "id": "CODE-LIST",
+      "path": "before/list.mjs",
+      "sha256": "1c8048f1c5348e6ddccfef899a026662dcd727ad17f2ea2a8c361400615e783f"
+    },
+    {
+      "id": "TEST-ASSIGNEE",
+      "path": "tests/assignee.test.mjs",
+      "sha256": "cc354657fb52421eb55a4b39b1724476909c12bdc2b278e1347b0ef0df79a938"
+    },
+    {
+      "id": "TEST-REGRESSION",
+      "path": "tests/regression.test.mjs",
+      "sha256": "71eb8d267515d08a9fe47e22724b92018fb513ebb904ef4d1fd9caa31b268753"
+    },
+    {
+      "id": "TEST-LOADER",
+      "path": "tests/load-implementation.mjs",
+      "sha256": "0600f86da022a5279eaab47c4f363dca782c05c020537342e8332d6231df40d4"
+    },
+    {
+      "id": "DATA-ISSUES",
+      "path": "initial-data.mjs",
+      "sha256": "45da39d481337fa23917e3d88cbb1b35f154d3aa19f7fe24019de34285860c6c"
+    },
+    {
+      "id": "LAB-201",
+      "path": "docs/labels.md",
+      "sha256": "d3d6f6e857add1caea84a76c762bc9e882412a14a8937f0be7b4ca924ca3fd20"
+    },
+    {
+      "id": "CODE-LABELS",
+      "path": "before/labels.mjs",
+      "sha256": "1cd86c5b9800ccb121abbed98097c7a934c2a0933c11815ff27e3b5b833b1d19"
+    },
+    {
+      "id": "TEST-LABELS",
+      "path": "tests/labels.test.mjs",
+      "sha256": "5d08bb90fc1bd7dae92319ff78c8af9e745668436b884b4bbe5e1429d990e163"
+    }
+  ]
+}

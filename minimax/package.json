@@ -1,0 +1,17 @@
+{
+  "name": "sdd-task-context",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "sdd": "node src/cli.mjs",
+    "verify": "node scripts/verify.mjs",
+    "test": "node --test fixture/issue-list/tests/*.test.mjs"
+  },
+  "dependencies": {
+    "@oceanbase/seekdb-node": "1.4.0",
+    "mysql2": "3.24.6"
+  }
+}

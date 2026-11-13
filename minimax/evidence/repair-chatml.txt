@@ -1,0 +1,21 @@
+<|im_start|>system
+You are a helpful assistant.<|im_end|>
+<|im_start|>user
+Review your JavaScript module. The stored issue.assignee can be null, undefined, or a string with leading and trailing whitespace. The current predicate fails ISS-101 because it lowercases the stored string without trimming. Keep the existing assigneeNeedle, and supply ONLY the new single predicate line, with no backticks. For a nonempty assigneeNeedle, compare it to the stored issue.assignee after converting a nullish value to an empty string, trimming and lowercasing. Whitespace-only or missing issue.assignee never matches a nonempty assigneeNeedle.
+
+Your current module:
+```javascript
+export function listIssues(issues, { status, query, assignee } = {}) {
+  const needle = (query ?? '').trim().toLowerCase();
+  const assigneeNeedle = (assignee ?? '').trim().toLowerCase();
+
+  return issues.filter(issue =>
+    (!status || issue.status === status) &&
+    (!needle || issue.title.toLowerCase().includes(needle)) &&
+    (!assigneeNeedle || issue.assignee?.toLowerCase() === assigneeNeedle)
+  );
+}
+```
+
+Single corrected predicate line:<|im_end|>
+<|im_start|>assistant

@@ -1,0 +1,172 @@
+{
+  "project": "issue-list",
+  "taskId": "assignee-filter",
+  "task": {
+    "title": "给工单列表增加负责人筛选",
+    "request": "在 listIssues 中按负责人全名筛选，使其可与 status、query 组合，并保持已有接口行为。",
+    "initialActions": [
+      "核对适用规格与基线测试",
+      "让 MiniMax 实现负责人筛选",
+      "运行目标功能与回归测试"
+    ]
+  },
+  "scopeId": "scp_1d60hg89jw8rr03zagt37sqbtc",
+  "revision": "v2",
+  "contextSha256": "5b9e4b35c7f554a3462c6aeb0b7f5bd04a4742458f2013873391b576c9d2942d",
+  "seekdb": {
+    "engine": "5.7.25-OceanBase seekdb-v1.4.0.0",
+    "sql": "SELECT c.revision, s.source_id AS id, s.kind, s.source_path AS path, s.symbol,\n       s.start_line AS startLine, s.end_line AS endLine, s.content, s.content_hash AS sha256\nFROM sdd_task_sources m\nJOIN sdd_sources s ON s.project_id = m.project_id AND s.source_id = m.source_id\nJOIN sdd_corpus c ON c.project_id = s.project_id\nWHERE m.project_id = ? AND m.task_id = ?\nORDER BY FIELD(s.kind, 'spec', 'code', 'test', 'data'), s.source_id",
+    "parameters": [
+      "issue-list",
+      "assignee-filter"
+    ],
+    "rows": 8
+  },
+  "sources": [
+    {
+      "id": "ISS-101",
+      "kind": "spec",
+      "path": "revisions/v2/requirements.md",
+      "symbol": null,
+      "startLine": 3,
+      "endLine": 5,
+      "content": "## ISS-101 负责人匹配\n\n在 `listIssues(issues, filters)` 中增加可选字符串字段 `filters.assignee`。筛选值和工单负责人都按 JavaScript `String.prototype.trim()` 的规则清除首尾空白，包括制表符和全角空格 U+3000，再以小写比较。只接受全名匹配。未指派的工单不能匹配非空负责人。",
+      "sha256": "ce3fc8ad884ac68073cb7d13d2e75a03bf64f0ea44156e84e9b4119d0e2c2487"
+    },
+    {
+      "id": "ISS-102",
+      "kind": "spec",
+      "path": "revisions/v2/requirements.md",
+      "symbol": null,
+      "startLine": 7,
+      "endLine": 9,
+      "content": "## ISS-102 空值兼容\n\n省略 `assignee`、传入 `null`、空字符串或去掉首尾空白后为空的字符串时，不启用负责人筛选。",
+      "sha256": "0f803ee029bd2cc0c9f318d12a774c3e603ae9be1634feb649b627dea456223a"
+    },
+    {
+      "id": "ISS-103",
+      "kind": "spec",
+      "path": "revisions/v2/requirements.md",
+      "symbol": null,
+      "startLine": 11,
+      "endLine": 13,
+      "content": "## ISS-103 组合与兼容\n\n负责人筛选与现有 `status`、`query` 筛选同时启用时为逻辑与。保留状态精确匹配和标题子串查询的行为，保留结果的输入顺序与对象引用。返回新数组，且不修改输入数组、工单或筛选对象。",
+      "sha256": "88a3d6fa8ba163cb1c1856333d0fbc0a2c3e84c46894705b912caf7ee4b03af1"
+    },
+    {
+      "id": "CODE-LIST",
+      "kind": "code",
+      "path": "before/list.mjs",
+      "symbol": "listIssues",
+      "startLine": 1,
+      "endLine": 8,
+      "content": "export function listIssues(issues, { status, query } = {}) {\n  const needle = (query ?? '').trim().toLowerCase();\n\n  return issues.filter(issue =>\n    (!status || issue.status === status) &&\n    (!needle || issue.title.toLowerCase().includes(needle))\n  );\n}",
+      "sha256": "1c8048f1c5348e6ddccfef899a026662dcd727ad17f2ea2a8c361400615e783f"
+    },
+    {
+      "id": "TEST-ASSIGNEE",
+      "kind": "test",
+      "path": "tests/assignee.test.mjs",
+      "symbol": null,
+      "startLine": 1,
+      "endLine": 26,
+      "content": "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { issues } from '../initial-data.mjs';\nimport { listIssues } from './load-implementation.mjs';\n\nconst ids = rows => rows.map(row => row.id);\n\ntest('ISS-101 normalizes both owner names, matches the whole name and preserves order', () => {\n  assert.deepEqual(ids(listIssues(issues, { assignee: ' lIn ' })), ['T-08', 'T-03', 'T-07']);\n});\n\ntest('ISS-101 trims tabs and full-width spaces on both sides', () => {\n  assert.deepEqual(ids(listIssues(issues, { assignee: '\\tLIN\\u3000' })), ['T-08', 'T-03', 'T-07']);\n});\n\ntest('ISS-101 returns an empty list when no issue has that owner', () => {\n  assert.deepEqual(ids(listIssues(issues, { assignee: 'Unknown' })), []);\n});\n\ntest('ISS-103 combines owner, status and title by intersection', () => {\n  const filters = Object.freeze({ assignee: 'LIN', status: 'open', query: ' cAcHe ' });\n  const result = listIssues(issues, filters);\n  assert.deepEqual(ids(result), ['T-08']);\n  assert.equal(result[0], issues[0]);\n  assert.notEqual(result, issues);\n});",
+      "sha256": "cc354657fb52421eb55a4b39b1724476909c12bdc2b278e1347b0ef0df79a938"
+    },
+    {
+      "id": "TEST-LOADER",
+      "kind": "test",
+      "path": "tests/load-implementation.mjs",
+      "symbol": null,
+      "startLine": 1,
+      "endLine": 4,
+      "content": "const variant = process.env.SDD_IMPLEMENTATION ?? 'after';\nif (!['before', 'after'].includes(variant)) throw new Error('SDD_IMPLEMENTATION must be before or after');\n\nexport const { listIssues } = await import(`../${variant}/list.mjs`);",
+      "sha256": "0600f86da022a5279eaab47c4f363dca782c05c020537342e8332d6231df40d4"
+    },
+    {
+      "id": "TEST-REGRESSION",
+      "kind": "test",
+      "path": "tests/regression.test.mjs",
+      "symbol": null,
+      "startLine": 1,
+      "endLine": 27,
+      "content": "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { issues } from '../initial-data.mjs';\nimport { listIssues } from './load-implementation.mjs';\n\nconst ids = rows => rows.map(row => row.id);\n\ntest('ISS-102 omitted and blank owners keep every issue, including unassigned issues', () => {\n  for (const filters of [{}, { assignee: null }, { assignee: '' }, { assignee: '\\t\\u3000 ' }]) {\n    assert.deepEqual(listIssues(issues, filters), issues);\n  }\n  const result = listIssues(issues);\n  assert.deepEqual(result, issues);\n  assert.notEqual(result, issues);\n  assert.equal(result[0], issues[0]);\n});\n\ntest('ISS-103 status is exact and title search is case insensitive', () => {\n  assert.deepEqual(ids(listIssues(issues, { status: 'open', query: ' CACHE ' })), ['T-08', 'T-11', 'T-01']);\n  assert.deepEqual(listIssues(issues, { status: 'Open' }), []);\n});\n\ntest('ISS-103 title-only search and empty result behavior stay compatible', () => {\n  assert.deepEqual(ids(listIssues(issues, { query: 'efresh' })), ['T-03']);\n  assert.deepEqual(listIssues(issues, { query: 'not present' }), []);\n  assert.deepEqual(listIssues([], { status: 'open' }), []);\n});",
+      "sha256": "71eb8d267515d08a9fe47e22724b92018fb513ebb904ef4d1fd9caa31b268753"
+    },
+    {
+      "id": "DATA-ISSUES",
+      "kind": "data",
+      "path": "initial-data.mjs",
+      "symbol": null,
+      "startLine": 1,
+      "endLine": 10,
+      "content": "const records = [\n  { id: 'T-08', title: 'Cache warm-up', status: 'open', assignee: ' Lin ', labels: ['infra', 'infra'] },\n  { id: 'T-03', title: 'Cache refresh', status: 'done', assignee: 'LIN', labels: ['infra'] },\n  { id: 'T-11', title: 'Cache timeout', status: 'open', assignee: 'Lina', labels: ['infra', 'urgent'] },\n  { id: 'T-01', title: 'Cache metrics', status: 'open', assignee: null, labels: ['observability'] },\n  { id: 'T-07', title: 'Review errors', status: 'open', assignee: '\\u3000lin\\t' },\n  { id: 'T-14', title: 'Improve index', status: 'open' },\n];\n\nexport const issues = Object.freeze(records.map(issue => Object.freeze(issue)));",
+      "sha256": "45da39d481337fa23917e3d88cbb1b35f154d3aa19f7fe24019de34285860c6c"
+    }
+  ],
+  "artifact": {
+    "family": "atomic-memory",
+    "artifact_id": "art_fa2396d144694950b6dedcd27c5f2e51",
+    "revision": 1
+  },
+  "progress": {
+    "status": "specification-updated",
+    "previousRevision": "v1",
+    "completed": [],
+    "pending": [
+      "核对适用规格与基线测试",
+      "让 MiniMax 实现负责人筛选",
+      "运行目标功能与回归测试"
+    ],
+    "verification": {},
+    "earlierVerification": {
+      "before": {
+        "implementationSha256": "f0cd985e8dcdf1a463f553fd3d2541e46deeeac418c6aeede2656550a1d8901b",
+        "testHashes": {
+          "tests/load-implementation.mjs": "083dc636ff3fd944e96ff36d32922d872dfa1e8056d9ce9d6f0d9cbec5ae5c54",
+          "initial-data.mjs": "c07cf3ba14a428ee87e0b8d14b1311630e28c4670162e95b3ca0b7325335df14",
+          "tests/assignee.test.mjs": "85520f44f12f28a40695a2ae6bfe4174b2c6f4fc123a08e1eb6f861ad1ef0dc0",
+          "tests/regression.test.mjs": "c8c98ae17b1e627ef66a3eb373d774035b9c95df8f108f33372696d2670f6867"
+        },
+        "results": [
+          {
+            "kind": "target",
+            "command": "node --test --test-reporter=tap fixture/issue-list/tests/assignee.test.mjs",
+            "exitCode": 1,
+            "passed": 0,
+            "failed": 4,
+            "assertionFailures": 4
+          },
+          {
+            "kind": "regression",
+            "command": "node --test --test-reporter=tap fixture/issue-list/tests/regression.test.mjs",
+            "exitCode": 0,
+            "passed": 3,
+            "failed": 0,
+            "assertionFailures": 0
+          }
+        ]
+      }
+    },
+    "nextAction": "按新规格重新运行基线测试"
+  },
+  "processId": 31836,
+  "powerContext": {
+    "version": "1.4.1",
+    "processId": 20680,
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/v1/scopes",
+        "status": 201,
+        "requestId": "815f36ef0171ecde"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/atomic-memory/list",
+        "status": 200,
+        "requestId": "9c05367987885813"
+      }
+    ]
+  }
+}

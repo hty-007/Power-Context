@@ -1,0 +1,94 @@
+{
+  "project": "issue-list",
+  "taskId": "label-summary",
+  "task": {
+    "title": "核对标签计数",
+    "request": "核对 countLabels 在每条工单内去重的逻辑。",
+    "initialActions": [
+      "核对标签计数规格与测试"
+    ]
+  },
+  "scopeId": "scp_1d60hg89jw8rr03zagt37sqbtc",
+  "revision": "v2",
+  "contextSha256": "a1656b3a2660e630667d295291856760b8c067ab1708fed53bec5e561541f355",
+  "seekdb": {
+    "engine": "5.7.25-OceanBase seekdb-v1.4.0.0",
+    "sql": "SELECT c.revision, s.source_id AS id, s.kind, s.source_path AS path, s.symbol,\n       s.start_line AS startLine, s.end_line AS endLine, s.content, s.content_hash AS sha256\nFROM sdd_task_sources m\nJOIN sdd_sources s ON s.project_id = m.project_id AND s.source_id = m.source_id\nJOIN sdd_corpus c ON c.project_id = s.project_id\nWHERE m.project_id = ? AND m.task_id = ?\nORDER BY FIELD(s.kind, 'spec', 'code', 'test', 'data'), s.source_id",
+    "parameters": [
+      "issue-list",
+      "label-summary"
+    ],
+    "rows": 4
+  },
+  "sources": [
+    {
+      "id": "LAB-201",
+      "kind": "spec",
+      "path": "docs/labels.md",
+      "symbol": null,
+      "startLine": 3,
+      "endLine": 5,
+      "content": "## LAB-201 单工单去重\n\n对每条工单中的重复标签只计一次，再汇总所有工单的标签计数。未标注标签的工单没有贡献。",
+      "sha256": "d3d6f6e857add1caea84a76c762bc9e882412a14a8937f0be7b4ca924ca3fd20"
+    },
+    {
+      "id": "CODE-LABELS",
+      "kind": "code",
+      "path": "before/labels.mjs",
+      "symbol": "countLabels",
+      "startLine": 1,
+      "endLine": 9,
+      "content": "export function countLabels(issues) {\n  const counts = new Map();\n  for (const issue of issues) {\n    for (const label of new Set(issue.labels ?? [])) {\n      counts.set(label, (counts.get(label) ?? 0) + 1);\n    }\n  }\n  return counts;\n}",
+      "sha256": "1cd86c5b9800ccb121abbed98097c7a934c2a0933c11815ff27e3b5b833b1d19"
+    },
+    {
+      "id": "TEST-LABELS",
+      "kind": "test",
+      "path": "tests/labels.test.mjs",
+      "symbol": null,
+      "startLine": 1,
+      "endLine": 8,
+      "content": "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { issues } from '../initial-data.mjs';\nimport { countLabels } from '../before/labels.mjs';\n\ntest('LAB-201 counts a label once per issue', () => {\n  assert.equal(countLabels(issues).get('infra'), 3);\n});",
+      "sha256": "5d08bb90fc1bd7dae92319ff78c8af9e745668436b884b4bbe5e1429d990e163"
+    },
+    {
+      "id": "DATA-ISSUES",
+      "kind": "data",
+      "path": "initial-data.mjs",
+      "symbol": null,
+      "startLine": 1,
+      "endLine": 10,
+      "content": "const records = [\n  { id: 'T-08', title: 'Cache warm-up', status: 'open', assignee: ' Lin ', labels: ['infra', 'infra'] },\n  { id: 'T-03', title: 'Cache refresh', status: 'done', assignee: 'LIN', labels: ['infra'] },\n  { id: 'T-11', title: 'Cache timeout', status: 'open', assignee: 'Lina', labels: ['infra', 'urgent'] },\n  { id: 'T-01', title: 'Cache metrics', status: 'open', assignee: null, labels: ['observability'] },\n  { id: 'T-07', title: 'Review errors', status: 'open', assignee: '\\u3000lin\\t' },\n  { id: 'T-14', title: 'Improve index', status: 'open' },\n];\n\nexport const issues = Object.freeze(records.map(issue => Object.freeze(issue)));",
+      "sha256": "45da39d481337fa23917e3d88cbb1b35f154d3aa19f7fe24019de34285860c6c"
+    }
+  ],
+  "artifact": null,
+  "progress": {
+    "status": "empty",
+    "completed": [],
+    "pending": [
+      "核对标签计数规格与测试"
+    ],
+    "verification": {},
+    "nextAction": "核对标签计数规格与测试"
+  },
+  "processId": 22628,
+  "powerContext": {
+    "version": "1.4.1",
+    "processId": 1664,
+    "requests": [
+      {
+        "method": "POST",
+        "path": "/v1/scopes",
+        "status": 201,
+        "requestId": "cfd9f33f79d866e9"
+      },
+      {
+        "method": "POST",
+        "path": "/v1/atomic-memory/list",
+        "status": 200,
+        "requestId": "d627461e5d7a186d"
+      }
+    ]
+  }
+}
