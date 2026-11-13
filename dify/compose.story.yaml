@@ -1,0 +1,26 @@
+services:
+  story-memory:
+    build:
+      context: ${FOG_HARBOR_DIR:?set FOG_HARBOR_DIR}/memory
+    restart: unless-stopped
+    networks:
+      - ssrf_proxy_network
+    volumes:
+      - fog_harbor_data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8079/health', timeout=5).close()"]
+      interval: 10s
+      timeout: 6s
+      retries: 10
+      start_period: 15s
+  ssrf_proxy:
+    volumes:
+      - ${FOG_HARBOR_DIR:?set FOG_HARBOR_DIR}/memory/squid-story.conf:/etc/squid/conf.d/10-fog-harbor.conf:ro
+  nginx:
+    ports: !override
+      - "127.0.0.1:${FOG_HARBOR_PORT:-8088}:80"
+  plugin_daemon:
+    ports: !reset []
+
+volumes:
+  fog_harbor_data:

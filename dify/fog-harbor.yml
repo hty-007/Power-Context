@@ -1,0 +1,795 @@
+app:
+  name: 雾港留灯
+  mode: advanced-chat
+  icon: 🏮
+  icon_background: '#FFEAD5'
+  description: 轮渡即将驶进雾港。你只有一幕准备时间，而值班簿会记住你的选择。
+  use_icon_as_answer_icon: true
+dependencies: []
+kind: app
+version: 0.6.0
+workflow:
+  conversation_variables:
+  - id: 56fdf487-4a2c-4b2a-8fd8-57d1353112f7
+    name: active_code
+    description: 当前对话选用的存档码
+    selector:
+    - conversation
+    - active_code
+    value_type: string
+    value: ''
+  environment_variables: []
+  features:
+    opening_statement: |
+      雾港的引航灯灭了。最后一班轮渡还在海上。
+
+      发送 **开始** 接班，或发送 `继续 存档码` 读回值班簿。
+    suggested_questions:
+    - 开始
+    - 怎么玩
+    suggested_questions_after_answer:
+      enabled: false
+    speech_to_text:
+      enabled: false
+    text_to_speech:
+      enabled: false
+    retriever_resource:
+      enabled: false
+    sensitive_word_avoidance:
+      enabled: false
+    file_upload:
+      enabled: false
+      image:
+        enabled: false
+  graph:
+    nodes:
+    - id: '1710000000001'
+      type: custom
+      data:
+        type: start
+        title: 接收玩家消息
+        desc: ''
+        selected: false
+        variables: []
+      position:
+        x: 0
+        y: 0
+      positionAbsolute:
+        x: 0
+        y: 0
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000002'
+      type: custom
+      data:
+        type: code
+        title: 识别指令
+        desc: 识别开始、恢复或行动，准备存档请求。
+        selected: false
+        code_language: python3
+        code: |
+          import json
+          import re
+          import unicodedata
+
+
+          CODE = re.compile(r"H-[0-9A-F]{24}")
+          ACTIONS = {"修灯", "问潮", "送信", "引航", "放船", "开闸", "鸣铃"}
+
+
+          def main(query: str, active_code: str) -> dict:
+              words = unicodedata.normalize("NFKC", query[:240]).strip().split()
+              active_code = active_code or ""
+              command = words[0].lower() if words else ""
+              explicit_code = words[1].upper() if len(words) == 2 else ""
+              code = explicit_code or active_code
+              action = ""
+              op = "help"
+
+              if len(words) == 1 and command in {"开始", "新游戏", "new"}:
+                  op = "new"
+                  code = ""
+              elif len(words) <= 2 and command in {"继续", "resume"}:
+                  op = "resume" if CODE.fullmatch(code) else "need_code"
+              elif len(words) == 1 and CODE.fullmatch(command.upper()):
+                  op = "resume"
+                  code = command.upper()
+              elif len(words) == 1 and command in ACTIONS:
+                  op = "move" if CODE.fullmatch(code) else "need_code"
+                  action = command
+              elif words and command not in {"帮助", "help", "怎么玩"}:
+                  op = "unknown"
+
+              load = {"op": op}
+              if op in {"resume", "move"}:
+                  load["code"] = code
+              return {
+                  "op": op,
+                  "action": action,
+                  "code": code,
+                  "previous_code": active_code,
+                  "load_body": json.dumps(load, separators=(",", ":")),
+              }
+        variables:
+        - variable: query
+          value_selector:
+          - sys
+          - query
+        - variable: active_code
+          value_selector:
+          - conversation
+          - active_code
+        outputs:
+          op:
+            type: string
+            children: null
+          action:
+            type: string
+            children: null
+          code:
+            type: string
+            children: null
+          previous_code:
+            type: string
+            children: null
+          load_body:
+            type: string
+            children: null
+      position:
+        x: 310
+        y: 0
+      positionAbsolute:
+        x: 310
+        y: 0
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000003'
+      type: custom
+      data:
+        type: http-request
+        title: 读取 PowerContext 存档
+        desc: 恢复和行动都会按存档码读当前 Atomic Memory。
+        selected: false
+        method: post
+        url: http://story-memory:8079/load
+        authorization:
+          type: no-auth
+          config: null
+        headers: Content-Type:application/json
+        params: ''
+        variables: []
+        body:
+          type: json
+          data:
+          - id: 1710000000003-body
+            key: ''
+            value: '{{#1710000000002.load_body#}}'
+            type: text
+        ssl_verify: true
+        timeout:
+          connect: 5
+          read: 20
+          write: 5
+        retry_config:
+          retry_enabled: false
+          max_retries: 0
+          retry_interval: 100
+        error_strategy: default-value
+        default_value:
+        - key: body
+          type: string
+          value: '{"status":"unavailable"}'
+        - key: status_code
+          type: number
+          value: 503
+        - key: headers
+          type: object
+          value: {}
+        - key: files
+          type: array[file]
+          value: []
+      position:
+        x: 620
+        y: 0
+      positionAbsolute:
+        x: 620
+        y: 0
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000004'
+      type: custom
+      data:
+        type: code
+        title: 推进剧情与解锁行动
+        desc: 由已读回的线索决定选项和结局。
+        selected: false
+        code_language: python3
+        code: |
+          import json
+
+
+          CLUES = {
+              "lens": {
+                  "action": "修灯",
+                  "keepsake": "修好的红色透镜",
+                  "recap": "你拆下裂镜时，在镜框背面摸到了三短一长四道刻痕。师傅教过你，那是轮渡认岸的灯号。",
+                  "choice": "引航",
+                  "option": "用红色透镜打出三短一长，把船引到东堤。",
+                  "ending": "红光领航",
+                  "result": "三道短光切开浓雾，第四道长光停在东堤。轮渡回了四声汽笛，慢慢转过暗礁。第一个上岸的孩子问那是不是星星。你把修好的红镜递到他面前，说是人留的灯。",
+                  "wait": "那枚红镜留在窗台，天亮时把第一束日光投进值班室。",
+              },
+              "chart": {
+                  "action": "问潮",
+                  "keepsake": "阿禾画的退潮水线",
+                  "recap": "舢板船主阿禾用沾盐的手在报纸上画出西汊浅滩。她答应听见双铃就放船，带你从轮渡侧面靠上去。",
+                  "choice": "放船",
+                  "option": "敲双铃叫上阿禾，沿她标出的退潮水线接人。",
+                  "ending": "潮线渡口",
+                  "result": "双铃响过，阿禾已经解开缆绳。你沿着那张报纸上的弯线领她绕过浅滩。船分三趟把旅客带回来。最后一趟，阿禾把湿透的报纸夹进舵缝，说下次还照这个走。",
+                  "wait": "阿禾把那张报纸晾在舱口，等下次退潮再补上今天的水线。",
+              },
+              "seal": {
+                  "action": "送信",
+                  "keepsake": "船闸值守员签回的急件",
+                  "recap": "你把迟到的轮渡名单挨家送到家属手上。最后一户正是值守员的家。她在急件上盖章，约定听到港灯接力的信号就放开内闸。",
+                  "choice": "开闸",
+                  "option": "凭签章请值守员打开内闸，让岸边家属用提灯标出水道。",
+                  "ending": "港灯接力",
+                  "result": "内闸慢慢抬起。收到名单的家属沿水道一盏盏提起灯，把船领进平静的内港。邮局窗口排起队，有人写地址，有人只写一句‘已到’，托你在天亮前寄出。",
+                  "wait": "家属把提灯挪到等候棚里，你替他们逐个念着名单。",
+              },
+          }
+          FIRST = {clue["action"]: key for key, clue in CLUES.items()}
+          LOCKED = {clue["choice"]: clue["keepsake"] for clue in CLUES.values()}
+          HELP = (
+              "发送 **开始** 开一份新存档。按回复里的加粗词发送行动，回复会给出接下来的选项。\n\n"
+              "已有存档时，在新对话发送 `继续 存档码`，也可以直接粘贴存档码。"
+          )
+
+
+          def state_for(clue="", ending=""):
+              return {"schema": 1, "clue": clue, "ending": ending}
+
+
+          def load_json(raw):
+              try:
+                  value = json.loads(raw)
+              except (ValueError, TypeError):
+                  return {}
+              return value if isinstance(value, dict) else {}
+
+
+          def is_story_state(state, version):
+              if not isinstance(state, dict) or state.get("schema") != 1:
+                  return False
+              clue, ending = state.get("clue"), state.get("ending")
+              if not isinstance(clue, str) or not isinstance(ending, str):
+                  return False
+              if version == 1:
+                  return clue == "" and ending == ""
+              if clue not in CLUES:
+                  return False
+              if version == 2:
+                  return ending == ""
+              return version == 3 and ending in {CLUES[clue]["choice"], "鸣铃"}
+
+
+          def render(state, code, notice=""):
+              clue = CLUES.get(state["clue"])
+              ending = state["ending"]
+              if ending:
+                  name = "雾中候船" if ending == "鸣铃" else clue["ending"]
+                  story = clue["result"]
+                  if ending == "鸣铃":
+                      story = (
+                          "你敲响停航铃。轮渡在外锚地抛锚，等天亮再进港。邮局的火炉烧了一夜，"
+                          "来等人的家属把最后一壶茶留给你。" + clue["wait"]
+                      )
+                  content = (
+                      f"### 结局 · {name}\n\n{story}\n\n"
+                      f"**值班簿** · 你先{clue['action']}，后来选择了{ending}。\n\n"
+                      "发送 **开始** 可以换一条路。"
+                  )
+              elif clue:
+                  content = (
+                      "### 第二幕 · 船已到雾里\n\n"
+                      f"{clue['recap']}\n\n"
+                      "外海传来一声短笛。轮渡已经到了暗礁外，值班钟只剩一次报时。\n\n"
+                      f"**值班簿** · 你先{clue['action']}，带来了{clue['keepsake']}。\n\n"
+                      f"- **{clue['choice']}** · {clue['option']}\n"
+                      "- **鸣铃** · 通知轮渡在外锚地过夜，等能见度恢复。\n\n"
+                      "发送加粗的行动词。"
+                  )
+              else:
+                  content = (
+                      "### 第一幕 · 最后一班轮渡\n\n"
+                      "雾港邮局的最后一只挂钟走到十一点半。带着七名旅客的轮渡还在外海，"
+                      "礁石边的引航灯却灭了。你是今晚的值班人，离下一声汽笛只够办一件事。\n\n"
+                      "- **修灯** · 爬上东堤灯塔，翻开师傅留下的红镜箱。\n"
+                      "- **问潮** · 到西汊找船主阿禾，问她现在还能走哪条水路。\n"
+                      "- **送信** · 趁巷口还看得清门牌，把轮渡名单和急件交到岸上。\n\n"
+                      "发送加粗的行动词。"
+                  )
+              if notice:
+                  content = notice + "\n\n" + content
+              return content + f"\n\n**存档码** · `{code}`\n\n换一个对话时，发送 `继续 {code}`。"
+
+
+          def main(op: str, action: str, code: str, previous_code: str, loaded: str) -> dict:
+              def reply(answer, active_code=previous_code):
+                  return {"mode": "reply", "answer": answer, "active_code": active_code, "save_body": ""}
+
+              def save(state, version, code):
+                  return {
+                      "mode": "save",
+                      "answer": render(state, code),
+                      "active_code": code,
+                      "save_body": json.dumps(
+                          {"code": code, "version": version, "state": state},
+                          separators=(",", ":"),
+                      ),
+                  }
+
+              if op in {"help", "unknown", "need_code"}:
+                  message = {
+                      "help": "",
+                      "unknown": "这条消息没匹配到行动。可以发送当前剧情中的加粗词。\n\n",
+                      "need_code": "这段对话还没有可继续的存档。\n\n",
+                  }[op]
+                  return reply(message + HELP)
+
+              result = load_json(loaded)
+              status = result.get("status")
+              if status == "missing":
+                  return reply("没找到这份存档。请检查存档码，或发送 **开始** 开一份新存档。")
+              if op == "new" and status == "new":
+                  return save(state_for(), 0, result["code"])
+              if status != "loaded":
+                  return reply("值班簿暂时打不开。稍等片刻后重发刚才的消息。")
+
+              state, version = result.get("state"), result.get("version")
+              if not is_story_state(state, version):
+                  return reply("这份值班簿的页码异常。原存档已保留。请稍后重试或用 **开始** 开新档。")
+              if op == "resume":
+                  return reply(render(state, code, "已从值班簿恢复上次进度。"), code)
+
+              clue, ending = state["clue"], state["ending"]
+              if ending:
+                  return reply(render(state, code, "这份存档已到结局。"), code)
+              if not clue and action in FIRST:
+                  return save(state_for(FIRST[action]), version, code)
+              if clue and action in {CLUES[clue]["choice"], "鸣铃"}:
+                  return save(state_for(clue, action), version, code)
+              if clue and action == CLUES[clue]["action"]:
+                  return reply(render(state, code, f"**{action}**已经记进值班簿。"), code)
+              notice = "这一幕请从下方选项中选择。"
+              if action in LOCKED:
+                  notice = f"眼下无法**{action}**。这条路线需要{LOCKED[action]}。"
+              return reply(render(state, code, notice), code)
+        variables:
+        - variable: op
+          value_selector:
+          - '1710000000002'
+          - op
+        - variable: action
+          value_selector:
+          - '1710000000002'
+          - action
+        - variable: code
+          value_selector:
+          - '1710000000002'
+          - code
+        - variable: previous_code
+          value_selector:
+          - '1710000000002'
+          - previous_code
+        - variable: loaded
+          value_selector:
+          - '1710000000003'
+          - body
+        outputs:
+          mode:
+            type: string
+            children: null
+          answer:
+            type: string
+            children: null
+          active_code:
+            type: string
+            children: null
+          save_body:
+            type: string
+            children: null
+      position:
+        x: 930
+        y: 0
+      positionAbsolute:
+        x: 930
+        y: 0
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000005'
+      type: custom
+      data:
+        type: if-else
+        title: 需要写入新进度吗？
+        desc: ''
+        selected: false
+        cases:
+        - case_id: 'true'
+          logical_operator: and
+          conditions:
+          - id: fog-harbor-save-condition
+            varType: string
+            variable_selector:
+            - '1710000000004'
+            - mode
+            comparison_operator: is
+            value: save
+      position:
+        x: 1240
+        y: 0
+      positionAbsolute:
+        x: 1240
+        y: 0
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000006'
+      type: custom
+      data:
+        type: http-request
+        title: 写入 PowerContext 存档
+        desc: 把开档或选择写为 Atomic Memory 的新修订。
+        selected: false
+        method: post
+        url: http://story-memory:8079/save
+        authorization:
+          type: no-auth
+          config: null
+        headers: Content-Type:application/json
+        params: ''
+        variables: []
+        body:
+          type: json
+          data:
+          - id: 1710000000006-body
+            key: ''
+            value: '{{#1710000000004.save_body#}}'
+            type: text
+        ssl_verify: true
+        timeout:
+          connect: 5
+          read: 20
+          write: 5
+        retry_config:
+          retry_enabled: false
+          max_retries: 0
+          retry_interval: 100
+        error_strategy: default-value
+        default_value:
+        - key: body
+          type: string
+          value: '{"status":"unavailable"}'
+        - key: status_code
+          type: number
+          value: 503
+        - key: headers
+          type: object
+          value: {}
+        - key: files
+          type: array[file]
+          value: []
+      position:
+        x: 1550
+        y: -150
+      positionAbsolute:
+        x: 1550
+        y: -150
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000007'
+      type: custom
+      data:
+        type: code
+        title: 确认写入结果
+        desc: 收到写入确认后，才向玩家展示新进度。
+        selected: false
+        code_language: python3
+        code: |
+          import json
+
+
+          def main(saved: str, answer: str, new_code: str, previous_code: str, op: str) -> dict:
+              try:
+                  result = json.loads(saved)
+              except (ValueError, TypeError):
+                  result = {}
+              status = result.get("status") if isinstance(result, dict) else None
+              if status == "saved":
+                  return {"answer": answer, "active_code": new_code}
+              if op == "new":
+                  message = "这次未收到开档确认。请发送 **开始** 再试一次。"
+              elif status == "conflict":
+                  message = f"这份存档已有更新。请发送 `继续 {new_code}` 查看当前进度。"
+              else:
+                  message = f"这次未收到写入确认。请发送 `继续 {new_code}` 核对进度，再决定下一步。"
+              return {"answer": message, "active_code": previous_code}
+        variables:
+        - variable: saved
+          value_selector:
+          - '1710000000006'
+          - body
+        - variable: answer
+          value_selector:
+          - '1710000000004'
+          - answer
+        - variable: new_code
+          value_selector:
+          - '1710000000004'
+          - active_code
+        - variable: previous_code
+          value_selector:
+          - '1710000000002'
+          - previous_code
+        - variable: op
+          value_selector:
+          - '1710000000002'
+          - op
+        outputs:
+          answer:
+            type: string
+            children: null
+          active_code:
+            type: string
+            children: null
+      position:
+        x: 1860
+        y: -150
+      positionAbsolute:
+        x: 1860
+        y: -150
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000008'
+      type: custom
+      data:
+        type: assigner
+        title: 记住当前存档码
+        desc: 用于在同一对话中直接发送行动词。
+        selected: false
+        version: '2'
+        items:
+        - variable_selector:
+          - conversation
+          - active_code
+          input_type: variable
+          operation: over-write
+          value:
+          - '1710000000007'
+          - active_code
+      position:
+        x: 2170
+        y: -150
+      positionAbsolute:
+        x: 2170
+        y: -150
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000009'
+      type: custom
+      data:
+        type: answer
+        title: 返回写入结果
+        desc: ''
+        selected: false
+        answer: '{{#1710000000007.answer#}}'
+        variables: []
+      position:
+        x: 2480
+        y: -150
+      positionAbsolute:
+        x: 2480
+        y: -150
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000010'
+      type: custom
+      data:
+        type: assigner
+        title: 记住当前存档码
+        desc: 用于在同一对话中直接发送行动词。
+        selected: false
+        version: '2'
+        items:
+        - variable_selector:
+          - conversation
+          - active_code
+          input_type: variable
+          operation: over-write
+          value:
+          - '1710000000004'
+          - active_code
+      position:
+        x: 1550
+        y: 160
+      positionAbsolute:
+        x: 1550
+        y: 160
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    - id: '1710000000011'
+      type: custom
+      data:
+        type: answer
+        title: 返回当前剧情或帮助
+        desc: ''
+        selected: false
+        answer: '{{#1710000000004.answer#}}'
+        variables: []
+      position:
+        x: 1860
+        y: 160
+      positionAbsolute:
+        x: 1860
+        y: 160
+      sourcePosition: right
+      targetPosition: left
+      width: 244
+      height: 100
+      selected: false
+    edges:
+    - id: 1710000000001-source-1710000000002-target
+      type: custom
+      source: '1710000000001'
+      sourceHandle: source
+      target: '1710000000002'
+      targetHandle: target
+      data:
+        sourceType: start
+        targetType: code
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000002-source-1710000000003-target
+      type: custom
+      source: '1710000000002'
+      sourceHandle: source
+      target: '1710000000003'
+      targetHandle: target
+      data:
+        sourceType: code
+        targetType: http-request
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000003-source-1710000000004-target
+      type: custom
+      source: '1710000000003'
+      sourceHandle: source
+      target: '1710000000004'
+      targetHandle: target
+      data:
+        sourceType: http-request
+        targetType: code
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000004-source-1710000000005-target
+      type: custom
+      source: '1710000000004'
+      sourceHandle: source
+      target: '1710000000005'
+      targetHandle: target
+      data:
+        sourceType: code
+        targetType: if-else
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000005-true-1710000000006-target
+      type: custom
+      source: '1710000000005'
+      sourceHandle: 'true'
+      target: '1710000000006'
+      targetHandle: target
+      data:
+        sourceType: if-else
+        targetType: http-request
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000006-source-1710000000007-target
+      type: custom
+      source: '1710000000006'
+      sourceHandle: source
+      target: '1710000000007'
+      targetHandle: target
+      data:
+        sourceType: http-request
+        targetType: code
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000007-source-1710000000008-target
+      type: custom
+      source: '1710000000007'
+      sourceHandle: source
+      target: '1710000000008'
+      targetHandle: target
+      data:
+        sourceType: code
+        targetType: assigner
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000008-source-1710000000009-target
+      type: custom
+      source: '1710000000008'
+      sourceHandle: source
+      target: '1710000000009'
+      targetHandle: target
+      data:
+        sourceType: assigner
+        targetType: answer
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000005-false-1710000000010-target
+      type: custom
+      source: '1710000000005'
+      sourceHandle: 'false'
+      target: '1710000000010'
+      targetHandle: target
+      data:
+        sourceType: if-else
+        targetType: assigner
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    - id: 1710000000010-source-1710000000011-target
+      type: custom
+      source: '1710000000010'
+      sourceHandle: source
+      target: '1710000000011'
+      targetHandle: target
+      data:
+        sourceType: assigner
+        targetType: answer
+        isInIteration: false
+        isInLoop: false
+      zIndex: 0
+    viewport:
+      x: 50
+      y: 220
+      zoom: 0.55
