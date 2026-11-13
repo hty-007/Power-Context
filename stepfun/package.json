@@ -1,0 +1,27 @@
+{
+  "name": "course-notes-seekdb",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": { "node": ">=22.12.0" },
+  "packageManager": "pnpm@10.33.0",
+  "scripts": {
+    "models": "node scripts/fetch-models.mjs",
+    "build": "vite build",
+    "start": "node server/index.mjs",
+    "test": "node --test tests/*.test.mjs",
+    "acceptance": "node tests/acceptance.mjs"
+  },
+  "dependencies": {
+    "@huggingface/transformers": "3.8.1",
+    "express": "5.1.0",
+    "seekdb": "1.4.0"
+  },
+  "devDependencies": {
+    "playwright": "1.56.1",
+    "vite": "7.1.12"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": ["@seekdb/js-bindings", "esbuild", "onnxruntime-node", "sharp"]
+  }
+}
