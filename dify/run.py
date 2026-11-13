@@ -4,7 +4,9 @@ import os
 import re
 import shutil
 import subprocess
+import time
 from pathlib import Path
+from urllib.request import urlopen
 
 
 ROOT = Path(__file__).resolve().parent
@@ -59,6 +61,20 @@ def compose_args(port):
     return command, env
 
 
+def wait_for_stack(command, env, port):
+    subprocess.run(command + ["up", "-d", "--no-deps", "--wait", "--wait-timeout", "120", "story-memory"],
+                   env=env, check=True)
+    deadline = time.monotonic() + 180
+    while time.monotonic() < deadline:
+        try:
+            with urlopen(f"http://127.0.0.1:{port}/console/api/setup", timeout=5) as response:
+                if response.status == 200:
+                    return
+        except OSError:
+            time.sleep(2)
+    raise RuntimeError("Dify's setup endpoint did not become ready. Check 'python run.py status'.")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run the Fog Harbor Dify demo")
     parser.add_argument("command", choices=["up", "status", "logs", "restart-memory", "down"])
@@ -67,7 +83,7 @@ def main():
     if not 1024 <= args.port <= 65535:
         parser.error("port must be between 1024 and 65535")
     commands = {
-        "up": ["up", "-d", "--build", "--wait", "--wait-timeout", "300"],
+        "up": ["up", "-d", "--build"],
         "status": ["ps", "-a"],
         "logs": ["logs", "--tail", "120", "story-memory"],
         "restart-memory": ["restart", "story-memory"],
@@ -82,6 +98,7 @@ def main():
         command, env = compose_args(args.port)
         subprocess.run(command + commands[args.command], env=env, check=True)
         if args.command == "up":
+            wait_for_stack(command, env, args.port)
             print(f"Dify setup: http://127.0.0.1:{args.port}/install")
             print(f"Import DSL: {ROOT / 'fog-harbor.yml'}")
     except subprocess.CalledProcessError as exc:
