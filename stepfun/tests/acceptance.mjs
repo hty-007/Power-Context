@@ -67,7 +67,7 @@ async function verifyUI(page, expectedDevice) {
   await page.getByRole('heading', { name: library, exact: true }).waitFor();
   await page.getByRole('button', { name: '导入示例笔记' }).click();
   await page.getByText('已新增 28 段笔记。', { exact: true }).waitFor({ timeout: 180_000 });
-  if (expectedDevice === 'wasm') await page.getByText('BGE Small · INT8 · 已自动降级', { exact: true }).waitFor();
+  if (expectedDevice === 'wasm') await page.getByText('BGE Small · FP16 · 已自动降级', { exact: true }).waitFor();
   else await page.getByText('WebGPU · 浏览器推理', { exact: true }).waitFor();
 
   await page.getByRole('button', { name: '二级索引为什么要回表？', exact: true }).click();
@@ -147,7 +147,7 @@ try {
   const initial = await newPage(browser);
   status = await initial.evaluate(() => window.courseNotesAcceptance.api('/status'));
   webgpu = await initial.evaluate(async () => {
-    const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
+  const adapter = await navigator.gpu?.requestAdapter({ powerPreference: 'high-performance' });
     return adapter ? { vendor: adapter.info.vendor, architecture: adapter.info.architecture, fallback: adapter.info.isFallbackAdapter } : null;
   });
   await initial.context().close();
@@ -157,19 +157,19 @@ try {
     const visible = await newPage(browser);
     await verifyUI(visible, 'webgpu');
     await visible.context().close();
-    for (let i = 1; i <= repeats; i += 1) await benchmark(browser, 'webgpu', 'q8', 8, i, true);
+    for (let i = 1; i <= repeats; i += 1) await benchmark(browser, 'webgpu', 'fp16', 8, i, true);
   }
   if (profile !== 'gpu') {
-    const fallback = await chromium.launch({ ...launchOptions, args: ['--disable-webgpu'] });
+    const fallback = await chromium.launch({ ...launchOptions, args: ['--disable-gpu', '--disable-software-rasterizer'] });
     try {
       const visible = await newPage(fallback);
       assert.equal(await visible.evaluate(async () => Boolean(await navigator.gpu?.requestAdapter())), false);
       await verifyUI(visible, 'wasm');
       await visible.context().close();
-      for (const precision of ['fp32', 'q8']) {
+      for (const precision of ['fp32', 'fp16']) {
         for (let i = 1; i <= repeats; i += 1) await benchmark(fallback, 'wasm', precision, 8, i, true);
       }
-      for (let i = 1; i <= repeats; i += 1) await benchmark(fallback, 'wasm', 'q8', 1, i, false);
+      for (let i = 1; i <= repeats; i += 1) await benchmark(fallback, 'wasm', 'fp16', 1, i, false);
     } finally {
       await fallback.close();
     }

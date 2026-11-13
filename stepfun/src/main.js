@@ -1,5 +1,6 @@
 import './style.css';
 import { api, ingest, query } from './workspace.js';
+import { DEFAULT_PRECISION } from '../shared/model.mjs';
 import { MAX_FILE_BYTES, MAX_IMPORT_BYTES, MAX_QUERY_LENGTH } from '../shared/notes.mjs';
 import { sampleNotes } from '../data/sample.mjs';
 
@@ -40,7 +41,7 @@ document.querySelector('#app').innerHTML = `
       </section>
       <div class="runtime-panel">
         <div class="runtime-icon">${icon('chips', 18)}</div>
-        <div><span class="runtime-title" id="runtime-label">等待本地推理</span><span class="runtime-detail" id="runtime-detail">BGE Small · INT8</span></div>
+        <div><span class="runtime-title" id="runtime-label">等待本地推理</span><span class="runtime-detail" id="runtime-detail">BGE Small · FP16</span></div>
       </div>
     </aside>
     <section class="content" aria-labelledby="page-title">
@@ -93,7 +94,7 @@ function modelStatus({ device, precision, fallbackReason }) {
   el('runtime-label').textContent = device === 'webgpu' ? 'WebGPU · 浏览器推理' : 'WASM · 浏览器推理';
   const fallback = fallbackReason || (device === 'wasm' ? el('runtime-detail').dataset.fallback : '');
   el('runtime-detail').dataset.fallback = fallback || '';
-  el('runtime-detail').textContent = `BGE Small · ${precision === 'fp32' ? 'FP32' : 'INT8'}${fallback ? ' · 已自动降级' : ''}`;
+  el('runtime-detail').textContent = `BGE Small · ${precision.toUpperCase()}${fallback ? ' · 已自动降级' : ''}`;
   el('runtime-detail').title = fallback || '';
 }
 
@@ -150,6 +151,10 @@ async function selectLibrary(id) {
   count = selected.chunks;
   localStorage.setItem(selectedKey, selected.id);
   el('page-title').textContent = selected.name;
+  el('runtime-label').textContent = '等待本地推理';
+  el('runtime-detail').textContent = `BGE Small · ${selected.precision.toUpperCase()}`;
+  el('runtime-detail').dataset.fallback = '';
+  el('runtime-detail').title = '';
   el('query').value = '';
   showCount();
   const buttons = libraries.map(library => {
@@ -270,7 +275,7 @@ el('library-form').addEventListener('submit', event => {
   const name = el('library-name').value.trim();
   el('library-dialog').close();
   perform(async () => {
-    const library = await api('/libraries', { name, precision: 'q8' });
+    const library = await api('/libraries', { name, precision: DEFAULT_PRECISION });
     libraries = await api('/libraries');
     await selectLibrary(library.id);
   });
@@ -284,8 +289,11 @@ perform(async () => {
   el('database-label').title = service.version;
   el('database-label').parentElement.classList.add('connected');
   libraries = await api('/libraries');
-  const initial = await api('/libraries', { name: '课程笔记', precision: 'q8' });
-  if (!libraries.some(library => library.id === initial.id)) libraries = await api('/libraries');
+  let initial = libraries.find(library => library.name === '课程笔记' && library.precision === DEFAULT_PRECISION);
+  if (!initial) {
+    initial = await api('/libraries', { name: '课程笔记', precision: DEFAULT_PRECISION });
+    libraries = await api('/libraries');
+  }
   const remembered = libraries.find(library => library.id === localStorage.getItem(selectedKey));
   await selectLibrary((remembered ?? initial).id);
 });

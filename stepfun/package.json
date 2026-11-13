@@ -3,7 +3,9 @@
   "version": "1.0.0",
   "private": true,
   "type": "module",
-  "engines": { "node": ">=22.12.0" },
+  "engines": {
+    "node": ">=22.12.0"
+  },
   "packageManager": "pnpm@10.33.0",
   "scripts": {
     "models": "node scripts/fetch-models.mjs",
@@ -14,6 +16,7 @@
   },
   "dependencies": {
     "@huggingface/transformers": "3.8.1",
+    "@oceanbase/seekdb-node": "1.4.0",
     "express": "5.1.0",
     "seekdb": "1.4.0"
   },
@@ -22,6 +25,11 @@
     "vite": "7.1.12"
   },
   "pnpm": {
-    "onlyBuiltDependencies": ["@seekdb/js-bindings", "esbuild", "onnxruntime-node", "sharp"]
+    "onlyBuiltDependencies": [
+      "@seekdb/js-bindings",
+      "esbuild",
+      "onnxruntime-node",
+      "sharp"
+    ]
   }
 }

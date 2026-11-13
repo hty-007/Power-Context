@@ -20,11 +20,10 @@ jobs:
       run:
         working-directory: stepfun
     env:
-      NOTES_DB_HOST: 127.0.0.1
-      NOTES_DB_PORT: '12881'
       NOTES_EVIDENCE_DIR: .runtime/evidence
       NOTES_BROWSER: chrome
       NOTES_TEST_PROFILE: wasm
+      NOTES_ACCEPTANCE: '1'
     steps:
       - uses: actions/checkout@08eba0b27e820071cde6df949e0beb9ba4906955 # v4.3.0
         with:
@@ -40,28 +39,16 @@ jobs:
             sudo apt-get update -qq
             sudo apt-get install -y -qq fonts-noto-cjk
           fi
-      - name: Start seekdb and fetch pinned models
+      - name: Fetch pinned models
         run: |
-          db_password=$(openssl rand -hex 24)
-          echo "::add-mask::$db_password"
-          export NOTES_DB_PASSWORD="$db_password"
-          echo "NOTES_DB_PASSWORD=$db_password" >> "$GITHUB_ENV"
-          docker compose up -d
           pnpm models
-          for attempt in $(seq 1 90); do
-            if docker compose exec -T seekdb mysql -h127.0.0.1 -uroot -p"$db_password" -e 'SELECT 1' >/dev/null 2>&1; then
-              exit 0
-            fi
-            sleep 2
-          done
-          exit 1
       - name: Play the application in Chrome and benchmark
         run: |
           mkdir -p .runtime/evidence
           node server/index.mjs > .runtime/evidence/server.log 2>&1 &
           server=$!
           trap 'kill "$server" 2>/dev/null || true' EXIT
-          for attempt in $(seq 1 30); do
+          for attempt in $(seq 1 100); do
             if curl --silent --fail http://127.0.0.1:4180/api/status >/dev/null; then break; fi
             if ! kill -0 "$server" 2>/dev/null; then cat .runtime/evidence/server.log; exit 1; fi
             sleep 1

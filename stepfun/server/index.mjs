@@ -3,28 +3,43 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import express from 'express';
 import { createStorage } from './storage.mjs';
-import { ASSETS, ASSET_SHA256, MODEL } from '../shared/model.mjs';
+import { ASSETS, ASSET_SHA256, DEFAULT_PRECISION, MODEL } from '../shared/model.mjs';
 import { MAX_CHUNKS, MAX_QUERY_LENGTH } from '../shared/notes.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 const runtime = join(ROOT, '.runtime');
-process.env.SEEKDB_BINDINGS_CACHE_DIR ??= join(runtime, 'bindings');
 const data = resolve(process.env.NOTES_DATA_DIR || join(runtime, 'library'));
 const port = Number(process.env.NOTES_PORT || 4180);
 const models = join(runtime, 'models');
+const acceptanceEnabled = process.env.NOTES_ACCEPTANCE === '1';
 const manifest = JSON.parse(await readFile(join(models, MODEL.id, 'manifest.json'), 'utf8'));
 if (manifest.revision !== MODEL.revision || !ASSETS.every(file => manifest.files?.[file]?.sha256 === ASSET_SHA256[file])) {
   throw new Error('Missing model assets. Run pnpm models before starting.');
 }
-const serverOptions = process.env.NOTES_DB_HOST ? {
+let localDatabase;
+let serverOptions = process.env.NOTES_DB_HOST ? {
   host: process.env.NOTES_DB_HOST,
   port: Number(process.env.NOTES_DB_PORT || 2881),
   database: process.env.NOTES_DB_DATABASE || 'test',
   user: process.env.NOTES_DB_USER || 'root',
   password: process.env.NOTES_DB_PASSWORD || '',
 } : undefined;
-const storage = createStorage(data, serverOptions);
-const version = await storage.initialize();
+if (!serverOptions) {
+  const { seekdb } = await import('@oceanbase/seekdb-node');
+  localDatabase = await seekdb.open(data, { parameters: { memory_budget: '2G', mysql_port_mode: 'random' } });
+  const endpoint = localDatabase.connectionOptions();
+  if (endpoint.transport !== 'tcp') {
+    localDatabase.close();
+    throw new Error('The embedded seekdb instance must provide a TCP endpoint. Set NOTES_DATA_DIR to a new path.');
+  }
+  serverOptions = { host: endpoint.host, port: endpoint.port, user: endpoint.user, database: 'test', password: '' };
+}
+const storage = createStorage(serverOptions);
+const version = await storage.initialize().catch(async error => {
+  await storage.close().catch(() => {});
+  localDatabase?.close();
+  throw error;
+});
 const app = express();
 app.disable('x-powered-by');
 app.use((req, res, next) => {
@@ -80,11 +95,13 @@ function api(method, path, operation) {
 }
 
 api('get', '/api/status', () => ({ database: 'seekdb', version, model: MODEL, assets: manifest.files }));
-api('get', '/api/libraries', () => storage.listLibraries());
+api('get', '/api/libraries', async () => (await storage.listLibraries()).filter(library => library.precision === DEFAULT_PRECISION));
 api('post', '/api/libraries', req => {
   const name = typeof req.body?.name === 'string' ? req.body.name.normalize('NFC').trim() : '';
   valid(name.length >= 1 && name.length <= 36 && !/[\p{Cc}]/u.test(name), '知识库名称须为 1–36 个字符。');
-  return storage.createLibrary(name, checkedPrecision(req.body.precision));
+  const precision = checkedPrecision(req.body.precision);
+  valid(acceptanceEnabled || precision === DEFAULT_PRECISION, '请选择当前支持的模型精度。');
+  return storage.createLibrary(name, precision);
 });
 api('get', '/api/libraries/:id', req => storage.state(checkedId(req.params.id)));
 api('post', '/api/libraries/:id/known', req => storage.existing(checkedId(req.params.id), checkedIds(req.body?.ids)));
@@ -120,4 +137,11 @@ app.use((error, req, res, next) => {
   res.status(status).json({ error: status >= 500 ? 'seekdb 操作暂未完成，请重试。' : error.message });
 });
 
-app.listen(port, '127.0.0.1', () => console.log(`课页 http://127.0.0.1:${port} · seekdb ${version}`));
+const server = app.listen(port, '127.0.0.1', () => console.log(`课页 http://127.0.0.1:${port} · seekdb ${version}`));
+for (const signal of ['SIGINT', 'SIGTERM']) {
+  process.once(signal, () => {
+    server.close(async () => {
+      try { await storage.close(); } finally { localDatabase?.close(); }
+    });
+  });
+}

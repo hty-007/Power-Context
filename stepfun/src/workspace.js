@@ -1,4 +1,3 @@
-import { MODEL } from '../shared/model.mjs';
 import { prepareNotes } from '../shared/notes.mjs';
 
 const worker = new Worker(new URL('./embed.worker.js', import.meta.url), { type: 'module' });
@@ -65,7 +64,7 @@ export async function ingest(library, notes, options, onProgress = () => {}) {
 
 export async function query(library, text, mode, options, onProgress = () => {}) {
   const start = performance.now();
-  const encoded = await embedding([MODEL.queryPrefix + text], { ...options, precision: library.precision }, onProgress);
+  const encoded = await embedding([text], { ...options, precision: library.precision }, onProgress);
   const { vectors, ...timings } = encoded;
   onProgress({ phase: 'search', device: timings.device, precision: library.precision });
   const matches = await api(`/libraries/${library.id}/search`, {

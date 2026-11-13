@@ -1,13 +1,12 @@
 import { createHash } from 'node:crypto';
-import { resolve } from 'node:path';
 import { FulltextIndexConfig, Schema, SeekdbClient, VectorIndexConfig } from 'seekdb';
 import { MODEL } from '../shared/model.mjs';
 
 const WINDOW = 25;
 const libraryTable = 'course_notes_libraries';
 
-export function createStorage(dataDirectory, serverOptions) {
-  const client = new SeekdbClient(serverOptions ?? { path: resolve(dataDirectory) });
+export function createStorage(serverOptions) {
+  const client = new SeekdbClient(serverOptions);
   const collections = new Map();
   let tail = Promise.resolve();
 
@@ -22,20 +21,22 @@ export function createStorage(dataDirectory, serverOptions) {
     await client.execute(`CREATE TABLE IF NOT EXISTS ${libraryTable} (
       id VARCHAR(40) PRIMARY KEY,
       name VARCHAR(100) NOT NULL,
-      precision VARCHAR(8) NOT NULL,
+      vector_dtype VARCHAR(8) NOT NULL,
       created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
     )`);
     return engine.version;
   }
 
   async function listLibraries() {
-    return client.execute(`SELECT id, name, precision FROM ${libraryTable} ORDER BY created_at, id`);
+    const rows = await client.execute(`SELECT id, name, vector_dtype FROM ${libraryTable} ORDER BY created_at, id`);
+    return rows.map(({ vector_dtype, ...row }) => ({ ...row, precision: vector_dtype }));
   }
 
   async function getLibrary(id) {
-    const [library] = await client.execute(`SELECT id, name, precision FROM ${libraryTable} WHERE id = ?`, [id]);
+    const [library] = await client.execute(`SELECT id, name, vector_dtype FROM ${libraryTable} WHERE id = ?`, [id]);
     if (!library) throw Object.assign(new Error('找不到这个知识库。'), { status: 404 });
-    return library;
+    const { vector_dtype, ...row } = library;
+    return { ...row, precision: vector_dtype };
   }
 
   async function createLibrary(name, precision) {
@@ -43,7 +44,7 @@ export function createStorage(dataDirectory, serverOptions) {
     const existing = (await listLibraries()).find(library => library.id === id);
     if (existing) return existing;
     await getCollection(id);
-    await client.execute(`INSERT INTO ${libraryTable} (id, name, precision) VALUES (?, ?, ?)`, [id, name, precision]);
+    await client.execute(`INSERT INTO ${libraryTable} (id, name, vector_dtype) VALUES (?, ?, ?)`, [id, name, precision]);
     return { id, name, precision };
   }
 
@@ -126,5 +127,5 @@ export function createStorage(dataDirectory, serverOptions) {
     return { rows, dbMs, mode };
   }
 
-  return { initialize, sequential, listLibraries, createLibrary, state, existing, index, search };
+  return { initialize, sequential, listLibraries, createLibrary, state, existing, index, search, close: () => client.close() };
 }
