@@ -24,6 +24,10 @@ jobs:
         run: python3 clean_acceptance.py
       - name: Capture the WebApp
         run: |
+          if [ -z "$(fc-list :lang=zh)" ]; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq fonts-noto-cjk
+          fi
           python3 -m venv .runtime/browser
           .runtime/browser/bin/python -m pip install --disable-pip-version-check playwright==1.56.0
           .runtime/browser/bin/python capture_webapp.py

@@ -117,37 +117,52 @@ def verify_outage(token):
 
 
 def capture_webapp(site_code):
-    from playwright.sync_api import sync_playwright
+    from playwright.sync_api import Error, expect as browser_expect, sync_playwright
 
     url = BASE + "/chat/" + site_code
     folder = ROOT / ".runtime" / "screenshots"
     folder.mkdir(parents=True, exist_ok=True)
 
     def send(page, text, heading):
+        stopped = page.get_by_test_id("stop-responding-container")
+        stopped.wait_for(state="hidden", timeout=25000)
         input_box = page.locator("textarea:visible").last
         input_box.fill(text)
-        input_box.press("Enter")
-        page.get_by_role("heading", name=heading).wait_for(timeout=25000)
-        page.locator("textarea:visible").last.wait_for(timeout=10000)
+        send_button = page.get_by_role("button", name="发送", exact=True).or_(page.get_by_role("button", name="Send", exact=True))
+        with page.expect_response(lambda response: response.request.method == "POST" and
+                                  response.url.split("?", 1)[0].endswith("/chat-messages"), timeout=20000) as pending:
+            send_button.click()
+        expect(pending.value.ok, f"WebApp chat request returned HTTP {pending.value.status}")
+        expect(pending.value.finished() is None, "WebApp received the complete response stream")
+        page.get_by_role("heading", name=heading, exact=True).last.wait_for(timeout=20000)
+        stopped.wait_for(state="hidden", timeout=10000)
+        browser_expect(input_box).to_have_value("", timeout=10000)
+        print(f"WebApp response visible: {heading}", flush=True)
 
     with sync_playwright() as playwright:
         browser = playwright.chromium.launch(channel="chrome")
-        first = browser.new_page(viewport={"width": 1360, "height": 1050}, locale="zh-CN")
-        first.goto(url, wait_until="domcontentloaded")
-        send(first, "开始", "第一幕 · 最后一班轮渡")
-        send(first, "修灯", "第二幕 · 船已到雾里")
-        codes = SAVE_CODE.findall(first.locator("body").inner_text())
-        expect(bool(codes), "WebApp displays the save code")
-        first.screenshot(path=folder / "01-first-conversation.png", animations="disabled")
+        page = browser.new_page(viewport={"width": 1360, "height": 1050}, locale="zh-CN")
+        try:
+            page.goto(url, wait_until="domcontentloaded")
+            send(page, "开始", "第一幕 · 最后一班轮渡")
+            send(page, "修灯", "第二幕 · 船已到雾里")
+            codes = SAVE_CODE.findall(page.locator("body").inner_text())
+            expect(bool(codes), "WebApp displays the save code")
+            page.screenshot(path=folder / "01-first-conversation.png", animations="disabled")
 
-        resumed = browser.new_page(viewport={"width": 1360, "height": 1050}, locale="zh-CN")
-        resumed.goto(url, wait_until="domcontentloaded")
-        send(resumed, "继续 " + codes[-1], "第二幕 · 船已到雾里")
-        resumed.get_by_text("已从值班簿恢复上次进度。", exact=True).wait_for()
-        resumed.screenshot(path=folder / "02-restored-conversation.png", animations="disabled")
-        send(resumed, "引航", "结局 · 红光领航")
-        resumed.screenshot(path=folder / "03-ending.png", animations="disabled")
-        browser.close()
+            page = browser.new_page(viewport={"width": 1360, "height": 1050}, locale="zh-CN")
+            page.goto(url, wait_until="domcontentloaded")
+            send(page, "继续 " + codes[-1], "第二幕 · 船已到雾里")
+            page.get_by_text("已从值班簿恢复上次进度。", exact=True).wait_for()
+            page.screenshot(path=folder / "02-restored-conversation.png", animations="disabled")
+            send(page, "引航", "结局 · 红光领航")
+            page.screenshot(path=folder / "03-ending.png", animations="disabled")
+        except (Error, AssertionError):
+            print(SAVE_CODE.sub("<存档码>", page.locator("body").inner_text(timeout=3000))[-1800:], flush=True)
+            page.screenshot(path=folder / "debug-webapp.png", animations="disabled")
+            raise
+        finally:
+            browser.close()
     print("Dify WebApp: captured original conversation, fresh conversation restore, and ending", flush=True)
 
 
