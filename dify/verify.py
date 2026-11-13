@@ -67,7 +67,7 @@ def check_dify(base, api_key, restart_memory=None):
     turns = []
     user = "fog-harbor-test-" + secrets.token_hex(8)
 
-    def chat(query, conversation="", required=(), forbidden=()):
+    def chat(query, conversation="", required=(), forbidden=(), label=""):
         payload = {
             "query": query, "inputs": {}, "response_mode": "blocking", "user": user,
             "auto_generate_name": False,
@@ -82,7 +82,10 @@ def check_dify(base, api_key, restart_memory=None):
         sanitized_answer = SAVE_CODE.sub("<存档码>", answer)
         expect(not missing and not unexpected,
                f"{sanitized_query!r}: missing={missing!r}, unexpected={unexpected!r}, answer={sanitized_answer!r}")
-        turns.append({"query": sanitized_query, "answer": sanitized_answer, "conversation_id": result["conversation_id"]})
+        turn = {"query": sanitized_query, "answer": sanitized_answer, "conversation_id": result["conversation_id"]}
+        if label:
+            turn["check"] = label
+        turns.append(turn)
         return result["conversation_id"], answer
 
     def new_game():
@@ -92,7 +95,7 @@ def check_dify(base, api_key, restart_memory=None):
         return conversation, match.group()
 
     chat("帮助", required=("新存档",))
-    chat("继续 H-" + secrets.token_hex(12).upper(), required=("没找到这份存档",))
+    chat("继续 H-" + secrets.token_hex(12).upper(), required=("没找到这份存档",), label="未知存档")
 
     routes = [
         ("修灯", "修好的红色透镜", "引航", "放船", "红光领航"),

@@ -22,6 +22,11 @@ jobs:
         run: python3 run.py up
       - name: Import the DSL and play all routes
         run: python3 clean_acceptance.py
+      - name: Capture the WebApp
+        run: |
+          python3 -m venv .runtime/browser
+          .runtime/browser/bin/python -m pip install --disable-pip-version-check playwright==1.56.0
+          .runtime/browser/bin/python capture_webapp.py
       - name: Collect PowerContext revision evidence
         if: always()
         run: |
@@ -34,4 +39,6 @@ jobs:
           path: |
             dify/acceptance.local.json
             dify/powercontext.log
+            dify/.runtime/screenshots/*.png
+          include-hidden-files: true
           retention-days: 14
