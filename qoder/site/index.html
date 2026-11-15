@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实验溯源台 · 让跑过的实验留下可查证的线索</title>
+<meta name="description" content="导入 Markdown 实验记录，用嵌入式 seekdb FULLTEXT 索引检索中英文记录，查看带原文行号的证据卡片，并判断两条实验是否可直接比较。">
+<link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+<header class="hero">
+  <p class="kicker">2026 竞赛生态 · Qoder 参赛项目</p>
+  <h1>实验溯源台</h1>
+  <p class="lead">实验跑过，原始条件、日志和指标却散在几十个 Markdown 里。<br>
+    这里把它们收进一个本地 seekdb：搜得到、比得准、每条结论都能点开看到原文第几行。</p>
+  <nav class="anchors">
+    <a href="#pain">痛点</a><a href="#features">功能</a><a href="#demo">演示</a>
+    <a href="#run">运行说明</a><a href="#review">评审入口</a><a href="#repo">仓库</a>
+  </nav>
+</header>
+
+<main>
+  <section id="pain">
+    <h2>要解决的问题</h2>
+    <ul class="prob">
+      <li><b>线索断裂</b>：只有一个 <code>acc=0.78</code>，不记得是哪个数据集、哪种划分、哪版预处理。</li>
+      <li><b>误比</b>：两条记录的指标一个叫 <code>accuracy</code> 单位是 <code>%</code>，另一个是 0–1 比例，直接相减得出错误结论。</li>
+      <li><b>重复</b>：同一份记录改了文件名再导入，库里堆出多份近似副本，检索结果互相矛盾。</li>
+      <li><b>复述成本高</b>：给导师/周报解释差异，要手抄指标、手贴出处。</li>
+    </ul>
+  </section>
+
+  <section id="features">
+    <h2>四个核心能力</h2>
+    <div class="grid">
+      <article><h3>导入 + 指纹去重</h3><p>解析实验名、项目、数据集、划分与指标表；对规范化正文取 sha256 指纹，同内容再导入只提示不新增副本。</p></article>
+      <article><h3>seekdb 全文检索</h3><p>对 <code>exp_record.body</code> 建 <code>FULLTEXT ... WITH PARSER ik</code> 索引，自然语言模式 <code>MATCH(body) AGAINST (?)</code> 查中英文，支持项目 / 数据集筛选；检索 SQL、传参与 EXPLAIN（<code>TEXT RETRIEVAL SCAN</code>）一并可见，参数位不出现用户输入的原文。</p></article>
+      <article><h3>证据卡片</h3><p>每条命中展示原记录名、命中文段和<b>原文行号</b>；行号按「原词 + <code>TOKENIZE(?, 'ik')</code> 实际词元」定位（实机确认 <code>复现实验</code> → <code>复现</code> + <code>实验</code>），索引失配时给出明确提示与下一步建议。</p></article>
+      <article><h3>可比性对比</h3><p>选两条记录计算指标变化与相对变化；单位、数据集或划分不一致时判定为不可直接比较，并导出带行号引用的 Markdown 摘要。</p></article>
+    </div>
+    <p class="stack">技术栈：Node.js 22+（实机探针：Windows + Node 26，pnpm 10）· <code>@oceanbase/seekdb-node 1.4.0</code>（本地 seekdb 服务端，Windows/Linux）· <code>mysql2</code> 连接池 + 参数化 SQL · utf8mb4 表 + <code>FULLTEXT ... WITH PARSER ik</code> 自然语言模式检索 · 原生 HTML/CSS/JS 界面 · 无账号 / Docker / 模型 / API Key，SQL 侧身份 <code>root@127.0.0.1</code>，HTTP 只绑 127.0.0.1。</p>
+  </section>
+
+  <section id="demo">
+    <h2>点选式演示</h2>
+    <p class="note">下面三段演示用的是交付目录 <code>samples/</code> 的<b>虚构演示样例</b>，在浏览器里用子串匹配静态复现界面形态，方便直接查看结果长什么样：
+      这里的命中集合、行号与「score」<b>都不等于真实索引的结果</b>（真实检索按 ik 词元，命中的行也可能与关键词字面不同）。
+      <b>现场导入与真实索引检索请在本地版执行</b>（见「运行说明」），那里的命中结果、行号与 EXPLAIN 全部来自真实 seekdb 实例。</p>
+    <div class="tabs" role="tablist">
+      <button role="tab" id="t1" aria-controls="p1" aria-selected="true" class="on">检索 + 证据</button>
+      <button role="tab" id="t2" aria-controls="p2" aria-selected="false">筛选变化</button>
+      <button role="tab" id="t3" aria-controls="p3" aria-selected="false">对比与导出</button>
+    </div>
+    <div class="tabpanel" id="p1" role="tabpanel" aria-labelledby="t1">
+      <div class="demo-search"><input id="dq" type="search" value="学习率" aria-label="演示检索词"><button id="dbtn" class="go">检索</button></div>
+      <div id="dhits"></div>
+      <pre id="dsql" class="sql"></pre>
+    </div>
+    <div class="tabpanel" id="p2" role="tabpanel" aria-labelledby="t2" hidden>
+      <label for="dp">项目筛选
+        <select id="dp"><option value="">全部</option><option>慢阻肺急性加重风险</option><option>睡眠呼吸事件分期</option><option>院前呼吸衰竭转运</option></select>
+      </label>
+      <p class="mut">检索词保持 <code>复现实验</code>：选「全部」时命中现场导入的新记录，切到其它项目后该命中消失 —— 演示筛选条件如何收窄证据范围。
+        注意本页用子串匹配，因此只有原文含「复现实验」字面串的记录会命中；本地版按 ik 词元检索，只写「本次复现…」或只写「…实验设置」的记录同样可能命中，界面会说明原因。</p>
+      <div id="pf-hits"></div>
+    </div>
+    <div class="tabpanel" id="p3" role="tabpanel" aria-labelledby="t3" hidden>
+      <div id="cmpA" class="cmpbox"></div>
+      <div id="cmpB" class="cmpbox"></div>
+      <pre id="dmd" class="sql md"></pre>
+      <p class="mut">摘要里的「第 N 行」就是本地版证据卡片给出的原文行号。</p>
+    </div>
+  </section>
+
+  <section id="shots">
+    <h2>真实运行界面</h2>
+    <p class="note">本地版使用 seekdb 1.4.0 检索下方的样例记录。点击图片可查看原图。</p>
+    <div class="shots">
+      <figure>
+        <a href="./screenshots/search-evidence.png"><img src="./screenshots/search-evidence.png" alt="查询学习率后的 seekdb 索引执行计划与证据卡片"></a>
+        <figcaption>检索命中文段、原文行号和 SQL 执行计划</figcaption>
+      </figure>
+      <figure>
+        <a href="./screenshots/compare-warning.png"><img src="./screenshots/compare-warning.png" alt="TCN 和 LSTM 使用不同数据集、划分及指标单位的对比结果"></a>
+        <figcaption>实验数据集、划分和单位不同时的比较提示</figcaption>
+      </figure>
+    </div>
+  </section>
+
+  <section id="run">
+    <h2>运行说明</h2>
+    <pre class="cmd"><code>cd qoder
+pnpm install          # 或 npm install：seekdb-node 1.4.0 + mysql2 3.11.5
+pnpm start            # http://127.0.0.1:4321（seekdb memory_budget 取 2G）
+pnpm test             # 一次临时 seekdb 实例：导入 / 去重与事务 / 索引检索 / 词元 / 筛选 / 可比与不可比 / 重启持久化
+pnpm run explain 复现实验   # 打印实际检索 SQL、传参、ik 词元与 EXPLAIN</code></pre>
+    <p class="mut">Windows 与 Linux 命令一致；PowerShell 下换数据目录用 <code>$env:EXPDB_HOME='D:\tmp\expdb'</code>，
+      Linux 用 <code>EXPDB_HOME=/tmp/expdb</code>。详细参数与验收步骤见团队仓库的 <code>qoder/README.md</code>。</p>
+  </section>
+
+  <section id="review">
+    <h2>评审入口</h2>
+    <ol class="steps">
+      <li>本地执行 <code>pnpm install</code> 和 <code>pnpm start</code>，状态条显示 seekdb 连接通道、<code>FULLTEXT ik</code> 与 utf8mb4。点开「查看检索 SQL / EXPLAIN」查看实际执行计划。</li>
+      <li>导入 <code>samples/02-改进-tcn.md</code>，再点「再导入」按钮 → 出现指纹重复提示，库内不新增副本。</li>
+      <li>搜 <code>学习率</code>、<code>accuracy</code>；现场粘贴含 <code>复现实验</code> 与 <code>RareKettle7</code> 的新记录，导入后两条查询立即命中且计划为 <code>TEXT RETRIEVAL SCAN</code>；
+        SQL 面板同时列出该查询的 ik 词元（<code>复现实验</code> → <code>复现</code> / <code>实验</code>），证据行就是按这些词元定位的；切换项目筛选，该命中消失；空查询与失配词都给出明确提示。</li>
+      <li>对比「手工基线 → TCN」得 Δaccuracy +7.5（+10.5%）；对比「TCN → 睡眠 LSTM」触发单位与数据集警告，复制 Markdown 摘要（含原文行号）。</li>
+      <li>重启服务再搜一次确认持久化。<code>pnpm test</code> 执行 26 项断言，将 SQL、参数及执行计划写入 <code>docs/seekdb-evidence.md</code>。</li>
+    </ol>
+  </section>
+
+  <section id="repo">
+    <h2>团队仓库</h2>
+    <p><a id="repo-link" class="cta" href="https://github.com/hty-007/Power-Context/tree/2026-competition-ecosystem-qoder/qoder" rel="noopener">打开源码与验收材料</a></p>
+  </section>
+</main>
+
+<footer>
+  <p>演示样例中的项目名、数据集与全部数值均为虚构，仅用于展示功能形态；本站点不提供账号、不采集访客数据。</p>
+</footer>
+<script src="./demo-data.js"></script>
+<script src="./demo.js"></script>
+</body>
+</html>

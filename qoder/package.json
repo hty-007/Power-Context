@@ -1,0 +1,23 @@
+{
+  "name": "exp-provenance-bench",
+  "version": "1.0.0",
+  "private": true,
+  "description": "实验溯源台 — 基于嵌入式 seekdb 的实验记录导入、全文检索与可比性对比",
+  "type": "module",
+  "main": "src/server.js",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "seed": "node src/cli.js seed",
+    "test": "node test/e2e.js",
+    "explain": "node src/cli.js explain",
+    "evidence": "node src/cli.js evidence"
+  },
+  "dependencies": {
+    "@oceanbase/seekdb-node": "1.4.0",
+    "mysql2": "3.11.5"
+  }
+}

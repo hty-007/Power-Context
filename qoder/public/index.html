@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>实验溯源台 · seekdb 实验记录检索与对比</title>
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <h1>实验溯源台</h1>
+    <p class="tagline">跑过的实验能搜到、比得了、带证据</p>
+  </div>
+  <p class="status" id="status" role="status">正在启动嵌入式 seekdb…</p>
+</header>
+
+<main>
+  <section class="panel" aria-labelledby="search-h">
+    <h2 id="search-h" class="sr-only">检索实验记录</h2>
+    <form id="search-form" class="searchbar" autocomplete="off">
+      <label class="sr-only" for="q">检索词</label>
+      <input id="q" name="q" type="search" placeholder="搜指标、结论、专有词，例如：accuracy / 学习率 / 复现实验 / RareKettle7">
+      <div class="filters" role="group" aria-label="筛选条件">
+        <label for="f-project">项目</label>
+        <select id="f-project"><option value="">全部</option></select>
+        <label for="f-dataset">数据集</label>
+        <select id="f-dataset"><option value="">全部</option></select>
+      </div>
+      <button type="submit" class="primary">检索</button>
+    </form>
+    <p class="hint">检索走 seekdb FULLTEXT 索引（ik 分词 + 自然语言模式，SQL 里只有占位符，检索词全部走传参）。按 <kbd>Enter</kbd> 检索，<kbd>/</kbd> 聚焦搜索框，<kbd>Esc</kbd> 清空。
+      自然语言模式按 ik 词元命中（例：「复现实验」切成「复现 + 实验」），所以正文只含其中一个词元的记录也会出现，证据行按「原词 + 实际词元」定位并在提示里说明原因。</p>
+    <p class="notice" id="search-note" hidden></p>
+  </section>
+
+  <section class="panel" aria-labelledby="hits-h">
+    <div class="row-between">
+      <h2 id="hits-h">证据卡片 <span class="count" id="hits-count"></span></h2>
+      <button type="button" class="ghost" id="toggle-sql">查看检索 SQL / EXPLAIN</button>
+    </div>
+    <pre id="sqlbox" class="sqlbox" hidden></pre>
+    <div id="hits" class="hits"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="cmp-h">
+    <h2 id="cmp-h">两条实验对比</h2>
+    <div class="compare-picker">
+      <label for="cmp-a">基线记录</label>
+      <select id="cmp-a"></select>
+      <label for="cmp-b">对比记录</label>
+      <select id="cmp-b"></select>
+      <button type="button" class="primary" id="cmp-run">比较</button>
+      <button type="button" class="ghost" id="cmp-copy" disabled>复制 Markdown 摘要</button>
+    </div>
+    <div id="cmp-issues" class="issues"></div>
+    <div class="table-wrap"><table id="cmp-table" class="cmp"></table></div>
+  </section>
+
+  <section class="panel" aria-labelledby="imp-h">
+    <h2 id="imp-h">导入实验记录（Markdown）</h2>
+    <div class="import-actions">
+      <button type="button" class="ghost" id="pick-file">选择 .md 文件</button>
+      <input type="file" id="file" accept=".md,.markdown,.txt" class="sr-only">
+      <span id="sample-buttons" class="samples"></span>
+    </div>
+    <label class="sr-only" for="md">Markdown 原文</label>
+    <textarea id="md" rows="10" placeholder="粘贴一份实验记录：# 标题 / - 项目：/ - 数据集：/ - 划分：/ | 指标 | 数值 | 单位 |"></textarea>
+    <div class="import-actions">
+      <button type="button" class="primary" id="do-import">导入并解析</button>
+      <span id="import-result" class="import-result" role="status"></span>
+    </div>
+  </section>
+
+  <section class="panel" aria-labelledby="rec-h">
+    <h2 id="rec-h">库内记录 <span class="count" id="rec-count"></span></h2>
+    <div class="table-wrap"><table id="records" class="rec"></table></div>
+  </section>
+</main>
+
+<footer>
+  <p>数据只写入本地 seekdb 实例所在目录（默认 <code>.data/</code>，已 gitignore），界面仅监听 127.0.0.1。样例记录为虚构演示数据。</p>
+</footer>
+<script src="/app.js"></script>
+</body>
+</html>
