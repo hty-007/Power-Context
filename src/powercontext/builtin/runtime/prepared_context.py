@@ -34,6 +34,7 @@ from powercontext.builtin.runtime.prepared_code import (
     PreparedCodeCandidate,
     assemble_code,
 )
+from powercontext.builtin.runtime.prepared_evidence import EvidenceSpan, select_evidence
 from powercontext.builtin.runtime.prepared_text import (
     TRUST_POLICY,
     ContextTextItem,
@@ -106,6 +107,7 @@ class PreparedContextBuild:
     origins: tuple[PreparedContextOrigin, ...]
     omissions: PreparedContextOmissions = PreparedContextOmissions()
     code_origins: tuple[CodeEvidenceRef, ...] = ()
+    fragments: tuple[PreparedEvidenceFragment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -115,6 +117,16 @@ class MemoryEntryAddress:
     memory: ArtifactAddress
     entry_id: str
     entry_version_id: str
+
+
+@dataclass(frozen=True)
+class PreparedEvidenceFragment:
+    """One literal Memory excerpt with half-open character offsets."""
+
+    address: MemoryEntryAddress
+    start: int
+    end: int
+    text: str
 
 
 PreparedContextOrigin = MemoryCitation | ArtifactRef | MemoryEntryAddress | ArtifactAddress
@@ -211,6 +223,9 @@ class PreparedContextBuilder:
         profile_candidates: Sequence[PreparedProfileCandidate] = (),
         code_candidates: Sequence[PreparedCodeCandidate] = (),
     ) -> PreparedContextBuild:
+        if request.evidence_selection:
+            return self._build_evidence(request, current_scope_id, memory_candidates)
+
         if request.include_code:
 
             def historical(history_request: PrepareContextRequest, entries: int) -> PreparedContextBuild:
@@ -256,6 +271,83 @@ class PreparedContextBuilder:
             omissions=omissions,
         )
 
+    def _build_evidence(
+        self,
+        request: PrepareContextRequest,
+        current_scope_id: str | None,
+        memory_candidates: Sequence[PreparedMemoryCandidates],
+    ) -> PreparedContextBuild:
+        if sum(len(candidates.hits) for candidates in memory_candidates) > self.memory_candidate_limit:
+            raise PreparedContextInvariantError("memory-candidate-limit")
+        addresses: list[MemoryEntryAddress] = []
+        documents: list[str] = []
+        identities: set[tuple[str, str, str, int, str, str]] = set()
+        for group in memory_candidates:
+            for entry in self._memory_entries(
+                group.memory_ref, group.hits, scope_id=group.scope_id or current_scope_id
+            ):
+                address = entry.origin
+                if not isinstance(address, MemoryEntryAddress):
+                    raise PreparedContextInvariantError("evidence-scope-missing")
+                artifact = address.memory.artifact
+                key = (
+                    address.memory.scope_id,
+                    artifact.family,
+                    artifact.artifact_id,
+                    artifact.revision,
+                    address.entry_id,
+                    address.entry_version_id,
+                )
+                if key not in identities:
+                    addresses.append(address)
+                    documents.append(entry.content)
+                    identities.add(key)
+
+        citations = tuple(
+            {
+                "scope_id": address.memory.scope_id,
+                "memory_ref": address.memory.artifact.model_dump(mode="json"),
+                "entry_id": address.entry_id,
+                "entry_version_id": address.entry_version_id,
+            }
+            for address in addresses
+        )
+
+        def render_item(span: EvidenceSpan) -> dict[str, object]:
+            return {
+                "citation": citations[span.document],
+                "content": documents[span.document][span.start : span.end],
+                "start": span.start,
+                "end": span.end,
+            }
+
+        spans = select_evidence(
+            request.query,
+            documents,
+            budget=request.max_bytes - len(_render_envelope(()).encode("utf-8")),
+            item_bytes=lambda span: len(_json_text(render_item(span)).encode("utf-8")),
+        )
+        if not spans:
+            return PreparedContextBuild(context=self.empty(), origins=())
+        fragments = tuple(
+            PreparedEvidenceFragment(
+                address=addresses[span.document],
+                start=span.start,
+                end=span.end,
+                text=documents[span.document][span.start : span.end],
+            )
+            for span in spans
+        )
+        content = _render_envelope(tuple(render_item(span) for span in spans))
+        content_bytes = len(content.encode("utf-8"))
+        if content_bytes > request.max_bytes:
+            raise PreparedContextInvariantError("output-budget")
+        return PreparedContextBuild(
+            context=PreparedContext(status="ready", content=content, content_bytes=content_bytes),
+            origins=tuple(fragment.address for fragment in fragments),
+            fragments=fragments,
+        )
+
     def probe_budget(
         self,
         *,
@@ -277,6 +369,15 @@ class PreparedContextBuilder:
         counters because both go through :meth:`_select_entries`.
         """
 
+        if request.evidence_selection:
+            build = self._build_evidence(request, current_scope_id, memory_candidates)
+            return RecallBudgetView(
+                max_bytes=request.max_bytes,
+                delivered_items=len(build.fragments),
+                truncated_items=build.omissions.truncated_items,
+                dropped_items=build.omissions.dropped_items,
+                unused_bytes=request.max_bytes - build.context.content_bytes,
+            )
         content, origins, omissions = self._select_entries(
             request=request,
             current_scope_id=current_scope_id,
@@ -686,12 +787,20 @@ def _interleave_groups(groups: Sequence[Sequence[_Item]]) -> tuple[_Item, ...]:
 
 
 def _render(entries: Sequence[_PreparedContextEntry]) -> str:
+    return _render_envelope(tuple(_render_entry(entry) for entry in entries))
+
+
+def _render_envelope(items: Sequence[dict[str, object]]) -> str:
     envelope = {
         "trust": "untrusted_history",
-        "items": [_render_entry(entry) for entry in entries],
+        "items": items,
     }
-    encoded = json.dumps(envelope, ensure_ascii=False, separators=(",", ":"))
+    encoded = _json_text(envelope)
     return "\n\n".join((TRUST_POLICY, f"{_BEGIN_MARKER}\n{encoded}\n{_END_MARKER}"))
+
+
+def _json_text(value: object) -> str:
+    return json.dumps(value, ensure_ascii=False, separators=(",", ":"))
 
 
 def _text_item(entry: _PreparedContextEntry) -> ContextTextItem:

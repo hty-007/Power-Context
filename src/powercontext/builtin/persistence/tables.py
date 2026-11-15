@@ -1015,11 +1015,30 @@ MEMORY_ENTRY_HEADS_TABLE = Table(
 
 MEMORY_TABLES = (MEMORY_ENTRY_VERSIONS_TABLE, MEMORY_ENTRY_HEADS_TABLE)
 
+SOURCE_LIFECYCLE_GRAPHS_TABLE = Table(
+    "pc_source_lifecycle_graphs",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("payload", _canonical_payload_type(), nullable=False),
+    ForeignKeyConstraint(("scope_id",), ("pc_scopes.scope_id",), ondelete="CASCADE"),
+)
+
+INACTIVE_TOPIC_REVISIONS_TABLE = Table(
+    "pc_inactive_topic_revisions",
+    SHARED_METADATA,
+    Column("scope_id", identity_string(MAX_SCOPE_ID_LENGTH), primary_key=True),
+    Column("artifact_id", identity_string(MAX_ARTIFACT_ID_LENGTH), primary_key=True),
+    Column("revision", BigInteger, primary_key=True),
+    ForeignKeyConstraint(("scope_id",), ("pc_source_lifecycle_graphs.scope_id",), ondelete="CASCADE"),
+)
+
 TOPIC_MEMORY_TABLES = (
     TOPIC_MEMORY_RETRIEVAL_SHAPE_TABLE,
     TOPIC_MEMORY_REVISION_PUBLICATIONS_TABLE,
     TOPIC_MEMORY_ACTIVE_TOPICS_TABLE,
     TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE,
+    SOURCE_LIFECYCLE_GRAPHS_TABLE,
+    INACTIVE_TOPIC_REVISIONS_TABLE,
 )
 
 # OceanBase requires FK column lengths to match the parent. A normalized-key

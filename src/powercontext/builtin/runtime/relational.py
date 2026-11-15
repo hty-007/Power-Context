@@ -1453,6 +1453,12 @@ class RelationalContexts:
             model_usage=self._model_usage,
         )
 
+    def lifecycle_memory(self, scope_id: str, connection: AsyncConnection, /) -> MemoryService:
+        """Bind native Memory writes to the transaction publishing the dependency graph."""
+        services = self._services_for(scope_id)
+        _, catalog = services.sources(connection)
+        return services.memory(catalog, connection)
+
 
 class _RelationalMemorySourceResolver:
     """Admit Memory evidence without changing the ordinary Source catalog."""

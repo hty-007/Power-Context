@@ -98,6 +98,51 @@ def _experience_hit(artifact_id: str = "experience-1", revision: int = 1) -> Exp
     )
 
 
+def test_evidence_selection_keeps_exact_scope_and_wire_budget() -> None:
+    text = '海洋探测记录 "sensor" 使用单独校准。'
+    hit = _hit("sensor", text)
+    groups = tuple(
+        PreparedMemoryCandidates(scope_id=scope, memory_ref=MEMORY_REF, hits=(hit,))
+        for scope in ("local", "referenced")
+    )
+    builder = PreparedContextBuilder()
+    request = PrepareContextRequest(query="海洋探测 sensor", max_bytes=1200, evidence_selection=True)
+    build = builder.build_scopes_result(request=request, current_scope_id="local", memory_candidates=groups)
+
+    assert tuple(fragment.address.memory.scope_id for fragment in build.fragments) == ("local", "referenced")
+    assert build.origins == tuple(fragment.address for fragment in build.fragments)
+    assert all((fragment.start, fragment.end, fragment.text) == (0, len(text), text) for fragment in build.fragments)
+    assert build.context.content is not None
+    assert build.context.content_bytes == len(build.context.content.encode("utf-8"))
+    envelope = json.loads(build.context.content.splitlines()[-2])
+    assert [item["citation"]["scope_id"] for item in envelope["items"]] == ["local", "referenced"]
+    assert [item["content"] for item in envelope["items"]] == [text, text]
+
+    reduced_request = request.model_copy(update={"max_bytes": build.context.content_bytes - 1})
+    reduced = builder.build_scopes_result(request=reduced_request, current_scope_id="local", memory_candidates=groups)
+    assert len(reduced.fragments) == 1
+    assert reduced.context.content_bytes <= reduced_request.max_bytes
+
+
+def test_evidence_selection_selects_disjoint_excerpts_from_one_entry() -> None:
+    prefix = "General administrative notes. " * 90
+    first = "The cobalt sensor calibration measured 37 degrees."
+    last = "The amber sensor calibration measured 19 degrees."
+    text = f"{prefix}{first} {prefix}{last}"
+    result = PreparedContextBuilder().build_result(
+        request=PrepareContextRequest(query="cobalt amber sensor calibration", max_bytes=1000, evidence_selection=True),
+        scope_id="local",
+        memory_ref=MEMORY_REF,
+        hits=(_hit("long-entry", text),),
+    )
+
+    assert len(result.fragments) == 2
+    assert first in result.fragments[0].text
+    assert last in result.fragments[1].text
+    assert all(fragment.text == text[fragment.start : fragment.end] for fragment in result.fragments)
+    assert result.fragments[0].end <= result.fragments[1].start
+
+
 def test_text_assembly_groups_selected_families_and_preserves_citations() -> None:
     prepared = PreparedContextBuilder().build(
         scope_id="project:test",

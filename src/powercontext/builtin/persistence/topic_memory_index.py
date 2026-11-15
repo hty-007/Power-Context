@@ -33,7 +33,34 @@ from powercontext.builtin.artifacts.topic_memory import (
     TopicMemorySearchRequest,
     TopicMemoryStorageInvariantError,
 )
-from powercontext.builtin.persistence.tables import TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE, TOPIC_MEMORY_ACTIVE_TOPICS_TABLE
+from powercontext.builtin.persistence.tables import (
+    INACTIVE_TOPIC_REVISIONS_TABLE,
+    TOPIC_MEMORY_ACTIVE_CHUNKS_TABLE,
+    TOPIC_MEMORY_ACTIVE_TOPICS_TABLE,
+)
+
+
+def topic_revision_available(projection: Table) -> ColumnElement[bool]:
+    inactive = INACTIVE_TOPIC_REVISIONS_TABLE
+    return (
+        ~select(inactive.c.scope_id)
+        .where(
+            inactive.c.scope_id == projection.c.scope_id,
+            inactive.c.artifact_id == projection.c.artifact_id,
+            inactive.c.revision == projection.c.revision,
+        )
+        .correlate(projection)
+        .exists()
+    )
+
+
+def topic_revision_available_sql(projection: str) -> str:
+    """Build a predicate for an index's fixed, code-defined table or alias."""
+    return (
+        f"NOT EXISTS (SELECT 1 FROM {INACTIVE_TOPIC_REVISIONS_TABLE.name} AS inactive "  # noqa: S608
+        f"WHERE inactive.scope_id = {projection}.scope_id "
+        f"AND inactive.artifact_id = {projection}.artifact_id AND inactive.revision = {projection}.revision)"
+    )
 
 
 class TopicMemoryIndex(Protocol):
