@@ -37,41 +37,43 @@ from powercontext.builtin.persistence.tags import memory_tag_parameters, memory_
 def _hybrid_statement(dimension: int, *, tagged: bool) -> TextClause:
     fts_filter = memory_tag_sql("f") if tagged else ""
     vector_filter = memory_tag_sql("m") if tagged else ""
-    # Limit each native search before combining the results. The outer order
-    # makes the channel order explicit, since derived tables need not retain it.
+    # Retain each native query's join and top-k plan. Re-sorting vector ties after
+    # the top-k can promote different entries than seekdb chose in the vector scan.
     # Only fixed tag predicates are interpolated; request values remain bound.
     sql = f"""
-        SELECT c.channel, c.memory_artifact_id, c.head_revision,
-               c.entry_id, c.entry_version_id, v.text, c.distance
+        SELECT 'fts' AS channel, fts.*
         FROM (
-            (SELECT 'fts' AS channel, f.scope_id, f.memory_artifact_id,
-                    f.head_revision, f.entry_id, f.entry_version_id,
-                    MATCH(f.searchable_text) AGAINST (:query) AS score,
-                    NULL AS distance, NULL AS vector_id
-             FROM pc_memory_entry_heads AS f
-             WHERE f.scope_id = :scope_id
-               AND f.memory_artifact_id IN :memory_artifact_ids
-               AND MATCH(f.searchable_text) AGAINST (:query)
-               {fts_filter}
-             ORDER BY score DESC, f.memory_artifact_id, f.entry_id, f.entry_version_id
-             LIMIT :candidate_limit)
-            UNION ALL
-            (SELECT 'vector' AS channel, m.scope_id, m.memory_artifact_id,
-                    m.head_revision, m.entry_id, m.entry_version_id,
-                    NULL AS score, l2_distance(m.embedding, :query_vector) AS distance, m.vector_id
-             FROM pc_memory_vector_entries AS m
-             WHERE m.scope_id = :scope_id
-               AND m.memory_artifact_id IN :memory_artifact_ids
-               {vector_filter}
-             ORDER BY l2_distance(m.embedding, :query_vector) APPROXIMATE
-             LIMIT :candidate_limit)
-        ) AS c
-        JOIN pc_memory_entry_versions AS v
-          ON v.scope_id = c.scope_id
-         AND v.memory_artifact_id = c.memory_artifact_id
-         AND v.entry_version_id = c.entry_version_id
-        ORDER BY c.channel, c.score DESC, c.distance, c.vector_id,
-                 c.memory_artifact_id, c.entry_id, c.entry_version_id
+            SELECT f.memory_artifact_id, f.head_revision, f.entry_id, f.entry_version_id,
+                   v.text, NULL AS distance
+            FROM pc_memory_entry_heads AS f
+            JOIN pc_memory_entry_versions AS v
+              ON v.scope_id = f.scope_id
+             AND v.memory_artifact_id = f.memory_artifact_id
+             AND v.entry_version_id = f.entry_version_id
+            WHERE f.scope_id = :scope_id
+              AND f.memory_artifact_id IN :memory_artifact_ids
+              AND MATCH(f.searchable_text) AGAINST (:query)
+              {fts_filter}
+            ORDER BY MATCH(f.searchable_text) AGAINST (:query) DESC,
+                     f.memory_artifact_id, f.entry_id, f.entry_version_id
+            LIMIT :candidate_limit
+        ) AS fts
+        UNION ALL
+        SELECT 'vector' AS channel, vec.*
+        FROM (
+            SELECT m.memory_artifact_id, m.head_revision, m.entry_id, m.entry_version_id,
+                   v.text, l2_distance(m.embedding, :query_vector) AS distance
+            FROM pc_memory_vector_entries AS m
+            JOIN pc_memory_entry_versions AS v
+              ON v.scope_id = m.scope_id
+             AND v.memory_artifact_id = m.memory_artifact_id
+             AND v.entry_version_id = m.entry_version_id
+            WHERE m.scope_id = :scope_id
+              AND m.memory_artifact_id IN :memory_artifact_ids
+              {vector_filter}
+            ORDER BY l2_distance(m.embedding, :query_vector) APPROXIMATE
+            LIMIT :candidate_limit
+        ) AS vec
         """  # noqa: S608
     statement = text(sql).bindparams(
         bindparam("memory_artifact_ids", expanding=True),

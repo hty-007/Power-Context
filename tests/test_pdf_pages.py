@@ -22,10 +22,26 @@ import pytest
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
-from powercontext.sources import TEXT_EVIDENCE_PROJECTION_KEY, SourceDefinitionRegistry, TextEvidence
+from powercontext.builtin.artifacts.memory import MemoryEntryInput
+from powercontext.builtin.persistence.sqlite import SQLiteConfig
+from powercontext.builtin.runtime import (
+    BuiltinConfig,
+    GetMemoryEntryRequest,
+    SubmitSourceObservation,
+    open_builtin_runtime,
+)
+from powercontext.builtin.scope import ScopeDraft
+from powercontext.sources import (
+    TEXT_EVIDENCE_PROJECTION_KEY,
+    SourceDefinitionRegistry,
+    TextEvidence,
+    manifest_for_definition,
+    project_source_for_transport,
+)
 from powercontext.sources.pdf_pages import (
     PDF_PAGE_SOURCE_DEFINITION,
     PDFDocumentInput,
+    PDFPageInput,
     parse_pdf_document,
     search_pdf_pages,
 )
@@ -74,6 +90,61 @@ def test_password_required_and_truncated_pdf_fail_atomically() -> None:
     valid = document("First", "Second")
     with pytest.raises(ValueError):
         parse_pdf_document(PDFDocumentInput(document_id="truncated", content=valid[: len(valid) // 2]))
+
+
+def test_inconsistent_page_tree_count_fails_atomically() -> None:
+    original = document("First", "Second")
+    assert b"/Count 2" in original
+    with pytest.raises(ValueError):
+        parse_pdf_document(
+            PDFDocumentInput(document_id="damaged", content=original.replace(b"/Count 2", b"/Count 3", 1))
+        )
+
+
+def test_retrieval_recovers_both_statements_when_neither_mentions_ebitda() -> None:
+    class EvidencePipeline:
+        async def extract(self, request, /):
+            return tuple(
+                MemoryEntryInput(
+                    kind="source-evidence",
+                    text=source.projection(TEXT_EVIDENCE_PROJECTION_KEY)["content"],
+                    sources=(source,),
+                )
+                for source in request.sources
+            )
+
+    async def scenario() -> None:
+        name = "NORTHSTAR_2025_10K"
+        registry = SourceDefinitionRegistry((PDF_PAGE_SOURCE_DEFINITION,))
+        pages = (
+            "This annual filing explains the company's EBITDA policy.",
+            "Consolidated Statements of Income\nSales 100. Gross profit 60.",
+            "Consolidated Statements of Cash Flows\nCapital spending 12. Purchases 8.",
+        )
+        async with open_builtin_runtime(
+            BuiltinConfig(database=SQLiteConfig()), candidate_pipeline=EvidencePipeline()
+        ) as runtime:
+            assert runtime.scopes is not None
+            scope = await runtime.scopes.create(
+                ScopeDraft(title="PDF reports", summary="Two statements", idempotency_key="pdf-retrieval")
+            )
+            await runtime.ingestion.register(manifest_for_definition(PDF_PAGE_SOURCE_DEFINITION))
+            for report, digest in (("NORTHSTAR_2024_10K", "b" * 64), (name, "a" * 64)):
+                for number, body in enumerate(pages, start=1):
+                    page = PDFPageInput(document_id=report, document_sha256=digest, page_number=number, text=body)
+                    source = await registry.resolve(page)
+                    await runtime.ingestion.submit(
+                        SubmitSourceObservation(
+                            scope_id=scope.scope_id, observation=project_source_for_transport(registry, source)
+                        )
+                    )
+            memory = runtime.memory.for_scope(scope.scope_id)
+            assert (await memory.flush()).processed
+            selections = await search_pdf_pages(memory, "What is Northstar EBITDA in FY2025?", limit=2)
+            texts = {(await memory.get(GetMemoryEntryRequest(citation=citation))).entry.text for citation in selections}
+            assert texts == {f"{name}\n{body}" for body in pages[1:]}
+
+    asyncio.run(scenario())
 
 
 @pytest.mark.parametrize("document_id", ["", " ", "\n\t"])
