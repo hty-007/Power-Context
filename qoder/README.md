@@ -1,5 +1,7 @@
 # 实验溯源台（Experiment Provenance Bench）
 
+[打开 Qoder Sites 演示站](https://exp-provenance-seekdb-4ehl0wm2gg9.qoder.zone/)
+
 面向做科研和课程实验的同学：实验跑过，但原始条件、日志和指标散在几十个 Markdown 里，
 下次想回答「这个 accuracy 是在哪个划分上跑的」「和上周那版能不能直接比」就断了线索。
 本工具把实验记录导入本地 **seekdb**，用真实 FULLTEXT 索引（ik 分词 + 自然语言模式）检索，

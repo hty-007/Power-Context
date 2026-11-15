@@ -38,14 +38,12 @@
       <article><h3>证据卡片</h3><p>每条命中展示原记录名、命中文段和<b>原文行号</b>；行号按「原词 + <code>TOKENIZE(?, 'ik')</code> 实际词元」定位（实机确认 <code>复现实验</code> → <code>复现</code> + <code>实验</code>），索引失配时给出明确提示与下一步建议。</p></article>
       <article><h3>可比性对比</h3><p>选两条记录计算指标变化与相对变化；单位、数据集或划分不一致时判定为不可直接比较，并导出带行号引用的 Markdown 摘要。</p></article>
     </div>
-    <p class="stack">技术栈：Node.js 22+（实机探针：Windows + Node 26，pnpm 10）· <code>@oceanbase/seekdb-node 1.4.0</code>（本地 seekdb 服务端，Windows/Linux）· <code>mysql2</code> 连接池 + 参数化 SQL · utf8mb4 表 + <code>FULLTEXT ... WITH PARSER ik</code> 自然语言模式检索 · 原生 HTML/CSS/JS 界面 · 无账号 / Docker / 模型 / API Key，SQL 侧身份 <code>root@127.0.0.1</code>，HTTP 只绑 127.0.0.1。</p>
+    <p class="stack">本地版使用 Node.js 22+、<code>@oceanbase/seekdb-node 1.4.0</code> 和 <code>mysql2</code>。实测环境为 Windows x64、Node.js 24.22.1。</p>
   </section>
 
   <section id="demo">
     <h2>点选式演示</h2>
-    <p class="note">下面三段演示用的是交付目录 <code>samples/</code> 的<b>虚构演示样例</b>，在浏览器里用子串匹配静态复现界面形态，方便直接查看结果长什么样：
-      这里的命中集合、行号与「score」<b>都不等于真实索引的结果</b>（真实检索按 ik 词元，命中的行也可能与关键词字面不同）。
-      <b>现场导入与真实索引检索请在本地版执行</b>（见「运行说明」），那里的命中结果、行号与 EXPLAIN 全部来自真实 seekdb 实例。</p>
+    <p class="note">线上演示用虚构样例做子串匹配。按<a href="#run">运行说明</a>启动本地版，即可导入记录并使用 seekdb 的全文索引。</p>
     <div class="tabs" role="tablist">
       <button role="tab" id="t1" aria-controls="p1" aria-selected="true" class="on">检索 + 证据</button>
       <button role="tab" id="t2" aria-controls="p2" aria-selected="false">筛选变化</button>
@@ -60,8 +58,7 @@
       <label for="dp">项目筛选
         <select id="dp"><option value="">全部</option><option>慢阻肺急性加重风险</option><option>睡眠呼吸事件分期</option><option>院前呼吸衰竭转运</option></select>
       </label>
-      <p class="mut">检索词保持 <code>复现实验</code>：选「全部」时命中现场导入的新记录，切到其它项目后该命中消失 —— 演示筛选条件如何收窄证据范围。
-        注意本页用子串匹配，因此只有原文含「复现实验」字面串的记录会命中；本地版按 ik 词元检索，只写「本次复现…」或只写「…实验设置」的记录同样可能命中，界面会说明原因。</p>
+      <p class="mut">切换项目，查看关键词「复现实验」在该项目下的命中记录和证据行。</p>
       <div id="pf-hits"></div>
     </div>
     <div class="tabpanel" id="p3" role="tabpanel" aria-labelledby="t3" hidden>
